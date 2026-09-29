@@ -85,7 +85,22 @@ func (c *conv) worker() {
 func (c *conv) outWorker() {
 	for job := range c.out {
 		job()
+		c.retype()
 	}
+}
+
+// retype restores the typing indicator right after the bot posted: clients
+// clear it when a post arrives, and the ticker in beginTyping may be seconds away.
+func (c *conv) retype() {
+	c.mu.Lock()
+	busy, root := c.active > 0, c.rootID
+	c.mu.Unlock()
+	if !busy {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = c.b.mm.Typing(ctx, c.b.me.ID, c.channelID, root)
 }
 
 func (c *conv) replyRoot() string {
