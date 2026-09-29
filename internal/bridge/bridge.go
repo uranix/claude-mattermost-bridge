@@ -28,16 +28,22 @@ type Bridge struct {
 	convs    map[string]*conv // by conversation key
 	byThread map[string]*conv // by app-server thread id
 
+	state *store
+
 	users sync.Map // user id -> username cache
 }
 
-func New(cfg *config.Config, m *mm.Client, app *appclient.Client, me mm.User) *Bridge {
+func New(cfg *config.Config, m *mm.Client, app *appclient.Client, me mm.User) (*Bridge, error) {
+	st, err := openStore(cfg.StateFile)
+	if err != nil {
+		return nil, fmt.Errorf("state file: %w", err)
+	}
 	return &Bridge{
-		cfg: cfg, mm: m, app: app, me: me,
+		cfg: cfg, mm: m, app: app, me: me, state: st,
 		mention:  regexp.MustCompile(`(?i)(^|[^\w.@-])@` + regexp.QuoteMeta(me.Username) + `\b`),
 		convs:    map[string]*conv{},
 		byThread: map[string]*conv{},
-	}
+	}, nil
 }
 
 // Run blocks until ctx is done.
@@ -94,6 +100,9 @@ func (b *Bridge) onPosted(ctx context.Context, ev mm.Posted) {
 		b.mu.Lock()
 		_, known := b.convs[key]
 		b.mu.Unlock()
+		if _, saved := b.state.get(key); saved {
+			known = true // engaged before a restart
+		}
 		if !mentioned && !known { // follow-ups in an engaged thread need no mention
 			return
 		}
@@ -110,6 +119,12 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 	c, ok := b.convs[key]
 	if !ok {
 		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, inbox: make(chan inbound, 64)}
+		if st, ok := b.state.get(key); ok {
+			c.cliSessionID = st.CliSessionID
+			if st.Mode != "" {
+				c.mode = st.Mode
+			}
+		}
 		b.convs[key] = c
 		go c.worker()
 	}
@@ -195,11 +210,16 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		}
 	case "turn/completed":
 		c.turnDone()
+		c.sessionRan()
 		if p.Status == "interrupted" {
 			c.reply("_Interrupted._")
 		}
 	case "turn/error":
 		c.turnDone()
+		if c.resumeFailed() {
+			c.reply("Could not resume the previous Claude session, so I started a fresh context. Please resend your message.")
+			return
+		}
 		c.reply("**Error:** " + p.Error)
 	case "turn/permission_denied":
 		c.reply(fmt.Sprintf("Permission denied for `%s` %s\nIf this is fine, run `!mode acceptEdits` (or `!mode bypassPermissions` if the server allows it) and repeat the request.",

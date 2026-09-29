@@ -19,6 +19,8 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
   while the agent works. Long output is split under Mattermost's post limit.
 - A message sent while a turn runs goes through `turn/steer`, i.e. it is queued
   as the next turn.
+- Conversation-to-session mappings are kept in a JSON state file, so contexts
+  survive restarts (see Limitations); `!new` forgets the saved session.
 - Attached files are downloaded to `BRIDGE_ATTACHMENT_DIR` (mode 600) and passed
   to Claude as local paths; the app server must share the filesystem.
 
@@ -55,10 +57,14 @@ Unknown `!words` are sent to Claude as ordinary text.
 
 ## Limitations
 
-- **No persistence.** claude-app-server keeps threads in memory per connection.
-  If it restarts or the connection drops, every conversation starts a fresh
-  context (users get a notice if work was running). Fixing this properly needs a
-  server method to attach an existing CLI session id.
+- **Resume needs a recent app server.** Conversations survive restarts of the
+  bridge and of claude-app-server: the bridge saves each conversation's Claude
+  CLI session id in `BRIDGE_STATE_FILE` (after its first completed turn) and
+  re-attaches with the server's `thread/attach`. Servers without that method
+  fall back to a fresh context. A turn that was running during the restart is
+  aborted. `CLAUDE_CWD` must not change, since the CLI stores sessions per
+  directory; if a saved session cannot be resumed the bridge starts fresh and
+  asks the user to resend.
 - **No live permission prompts.** The server has no `can_use_tool` routing yet;
   denied tools are reported (`turn/permission_denied`) and the user can raise the
   mode with `!mode`. Default mode is `acceptEdits`.

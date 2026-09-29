@@ -51,5 +51,10 @@ func main() {
 	}
 
 	app := appclient.New(cfg.AppServerURL)
-	bridge.New(cfg, client, app, me).Run(ctx)
+	br, err := bridge.New(cfg, client, app, me)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	br.Run(ctx)
 }

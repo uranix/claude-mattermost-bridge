@@ -18,6 +18,7 @@ import (
 
 // Error codes of claude-app-server.
 const (
+	ErrMethodNotFound = -32601
 	ErrThreadNotFound = -32001
 	ErrTurnBusy       = -32003
 	ErrNoActiveTurn   = -32004

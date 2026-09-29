@@ -33,12 +33,14 @@ type conv struct {
 	channelID string
 	inbox     chan inbound
 
-	mu         sync.Mutex
-	threadID   string
-	mode       string
-	active     int    // turns sent to the app server and not yet finished
-	rootID     string // reply target of the latest inbound message
-	stopTyping context.CancelFunc
+	mu           sync.Mutex
+	threadID     string
+	mode         string
+	cliSessionID string // Claude CLI session behind threadID; survives restarts via the state file
+	attached     bool   // threadID was attached to a saved session and has not completed a turn yet
+	active       int    // turns sent to the app server and not yet finished
+	rootID       string // reply target of the latest inbound message
+	stopTyping   context.CancelFunc
 }
 
 func (c *conv) enqueue(in inbound) {
@@ -150,7 +152,7 @@ func (c *conv) markIdle() {
 
 func (c *conv) ensureThread(ctx context.Context) error {
 	c.mu.Lock()
-	tid, mode := c.threadID, c.mode
+	tid, mode, sid := c.threadID, c.mode, c.cliSessionID
 	c.mu.Unlock()
 	if tid != "" {
 		return nil
@@ -160,13 +162,35 @@ func (c *conv) ensureThread(ctx context.Context) error {
 		params["cwd"] = c.b.cfg.Cwd
 	}
 	var res struct {
-		ThreadID string `json:"thread_id"`
+		ThreadID     string `json:"thread_id"`
+		CliSessionID string `json:"cli_session_id"`
 	}
-	if err := c.b.app.Call(ctx, "thread/start", params, &res); err != nil {
-		return fmt.Errorf("thread/start: %w", err)
+	attached := false
+	if sid != "" {
+		params["cli_session_id"] = sid
+		err := c.b.app.Call(ctx, "thread/attach", params, &res)
+		switch {
+		case err == nil:
+			attached = true
+		case appclient.IsCode(err, appclient.ErrMethodNotFound):
+			slog.Warn("app server has no thread/attach; context cannot be resumed", "conv", c.key)
+		default:
+			return fmt.Errorf("thread/attach: %w", err)
+		}
+		delete(params, "cli_session_id")
+	}
+	if !attached {
+		if err := c.b.app.Call(ctx, "thread/start", params, &res); err != nil {
+			return fmt.Errorf("thread/start: %w", err)
+		}
+		if res.CliSessionID == "" {
+			res.CliSessionID = res.ThreadID // servers before thread/attach: session id == thread id
+		}
 	}
 	c.mu.Lock()
 	c.threadID = res.ThreadID
+	c.cliSessionID = res.CliSessionID
+	c.attached = attached
 	c.mu.Unlock()
 	c.b.mu.Lock()
 	c.b.byThread[res.ThreadID] = c
@@ -198,7 +222,7 @@ func (c *conv) onServerReset() {
 		stop()
 	}
 	if hadWork {
-		c.reply("_Connection to the agent server was lost; the running request was aborted and the context reset._")
+		c.reply("_Connection to the agent server was lost and the running request was aborted. Your next message resumes the conversation._")
 	}
 }
 
@@ -281,4 +305,34 @@ func (c *conv) downloadFiles(ctx context.Context, p mm.Post) string {
 		lines = append(lines, fmt.Sprintf("- %s (original name %q, %s, %d bytes)", dest, fi.Name, fi.MimeType, fi.Size))
 	}
 	return "Attached files (local paths):\n" + strings.Join(lines, "\n")
+}
+
+// sessionRan records that the CLI session now exists on disk (a turn finished),
+// which is the earliest point at which it can be resumed after a restart.
+func (c *conv) sessionRan() {
+	c.mu.Lock()
+	c.attached = false
+	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode}
+	c.mu.Unlock()
+	if st.CliSessionID != "" {
+		c.b.state.put(c.key, st)
+	}
+}
+
+// resumeFailed handles a turn error on a freshly attached session: the saved
+// session is gone or unreadable, so forget it. Reports whether that was the case.
+func (c *conv) resumeFailed() bool {
+	c.mu.Lock()
+	failed, tid := c.attached, c.threadID
+	if failed {
+		c.attached = false
+		c.cliSessionID = ""
+	}
+	c.mu.Unlock()
+	if !failed {
+		return false
+	}
+	c.b.state.delete(c.key)
+	c.dropThread(tid)
+	return true
 }

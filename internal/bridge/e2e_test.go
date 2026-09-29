@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -108,7 +109,9 @@ func newFakeApp(t *testing.T, calls chan string) *httptest.Server {
 			calls <- req.Method + " " + string(req.Params)
 			switch req.Method {
 			case "thread/start":
-				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"thread_id": "T1"}})
+				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"thread_id": "T1", "cli_session_id": "S1"}})
+			case "thread/attach":
+				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"thread_id": "T1", "cli_session_id": "S1", "attached": true}})
 			case "turn/start":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"turn_id": "U1"}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
@@ -140,7 +143,11 @@ func TestEndToEnd(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go New(cfg, client, appclient.New(cfg.AppServerURL), me).Run(ctx)
+	br, err := New(cfg, client, appclient.New(cfg.AppServerURL), me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go br.Run(ctx)
 	time.Sleep(300 * time.Millisecond) // let both websockets connect
 
 	// DM: no mention needed, reply is flat.
@@ -183,4 +190,66 @@ func TestEndToEnd(t *testing.T) {
 	// Commands are answered locally.
 	fm.say("D", "dmchan", "p4", "", "!help")
 	fm.waitPost(t, "Commands")
+}
+
+func startBridge(t *testing.T, cfg *config.Config, msrv *httptest.Server) context.CancelFunc {
+	client := mm.New(msrv.URL, "tok")
+	me, err := client.Me(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	br, err := New(cfg, client, appclient.New(cfg.AppServerURL), me)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go br.Run(ctx)
+	time.Sleep(300 * time.Millisecond)
+	return cancel
+}
+
+func drain(calls chan string) (out []string) {
+	for len(calls) > 0 {
+		out = append(out, <-calls)
+	}
+	return
+}
+
+func TestResumeAfterRestart(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	cfg := &config.Config{
+		MattermostURL: "unused", Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+		StateFile: t.TempDir() + "/state.json",
+	}
+
+	// First run: fresh thread, session id is saved after the first completed turn.
+	fm1, msrv1 := newFakeMM(t)
+	stop := startBridge(t, cfg, msrv1)
+	fm1.say("D", "dmchan", "p1", "", "hi")
+	fm1.waitPost(t, "hello from claude")
+	stop()
+	if got := strings.Join(drain(calls), "\n"); !strings.Contains(got, "thread/start") || strings.Contains(got, "thread/attach") {
+		t.Fatalf("first run should start a thread:\n%s", got)
+	}
+
+	// Second run (bridge restarted, new app-server connection): must attach to S1.
+	fm2, msrv2 := newFakeMM(t)
+	stop = startBridge(t, cfg, msrv2)
+	defer stop()
+	fm2.say("D", "dmchan", "p2", "", "again")
+	fm2.waitPost(t, "hello from claude")
+	got := strings.Join(drain(calls), "\n")
+	if !strings.Contains(got, `thread/attach {"cli_session_id":"S1"`) || strings.Contains(got, "thread/start") {
+		t.Fatalf("second run should attach to the saved session:\n%s", got)
+	}
+
+	// !new forgets the session.
+	fm2.say("D", "dmchan", "p3", "", "!new")
+	fm2.waitPost(t, "fresh context")
+	if b, _ := os.ReadFile(cfg.StateFile); strings.Contains(string(b), "S1") {
+		t.Fatalf("!new should delete the saved session: %s", b)
+	}
 }

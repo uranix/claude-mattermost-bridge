@@ -22,6 +22,7 @@ type Config struct {
 	Model          string
 
 	AttachDir string
+	StateFile string // conversation -> CLI session map; "" disables persistence
 	ShowTools bool
 	Debug     bool
 }
@@ -34,6 +35,7 @@ func Load() (*Config, error) {
 		PermissionMode: getenv("CLAUDE_PERMISSION_MODE", "acceptEdits"),
 		Model:          os.Getenv("CLAUDE_MODEL"),
 		AttachDir:      getenv("BRIDGE_ATTACHMENT_DIR", "attachments"),
+		StateFile:      getenv("BRIDGE_STATE_FILE", "state.json"),
 		AllowChannels:  truthy(os.Getenv("MM_ALLOW_CHANNELS")),
 		ShowTools:      truthy(os.Getenv("BRIDGE_SHOW_TOOLS")),
 		Debug:          truthy(os.Getenv("BRIDGE_DEBUG")),

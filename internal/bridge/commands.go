@@ -46,7 +46,10 @@ func (c *conv) command(in inbound) bool {
 		c.mu.Lock()
 		tid := c.threadID
 		c.active = 0
+		c.cliSessionID = ""
+		c.attached = false
 		c.mu.Unlock()
+		c.b.state.delete(c.key)
 		if tid != "" {
 			go c.interrupt(tid)
 			c.dropThread(tid)
@@ -131,6 +134,11 @@ func (c *conv) setMode(args []string) {
 	}
 	c.mu.Lock()
 	c.mode = res.Mode
+	sid := c.cliSessionID
 	c.mu.Unlock()
+	if st, ok := c.b.state.get(c.key); ok && st.CliSessionID == sid {
+		st.Mode = res.Mode
+		c.b.state.put(c.key, st)
+	}
 	c.reply("Permission mode: `" + res.Mode + "`")
 }
