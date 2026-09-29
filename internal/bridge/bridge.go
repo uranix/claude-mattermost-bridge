@@ -233,16 +233,19 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 	}
 
 	var p struct {
-		ThreadID  string          `json:"thread_id"`
-		RequestID string          `json:"request_id"`
-		Reason    string          `json:"reason"`
-		MessageID string          `json:"message_id"`
-		TurnID    string          `json:"turn_id"`
-		Status    string          `json:"status"`
-		Error     string          `json:"error"`
-		ToolName  string          `json:"tool_name"`
-		ToolInput json.RawMessage `json:"tool_input"`
-		Item      struct {
+		ThreadID   string          `json:"thread_id"`
+		RequestID  string          `json:"request_id"`
+		Reason     string          `json:"reason"`
+		MessageID  string          `json:"message_id"`
+		Trigger    string          `json:"trigger"`
+		PreTokens  int             `json:"pre_tokens"`
+		PostTokens int             `json:"post_tokens"`
+		TurnID     string          `json:"turn_id"`
+		Status     string          `json:"status"`
+		Error      string          `json:"error"`
+		ToolName   string          `json:"tool_name"`
+		ToolInput  json.RawMessage `json:"tool_input"`
+		Item       struct {
 			Item struct {
 				Type  string          `json:"type"`
 				Text  string          `json:"text"`
@@ -272,6 +275,14 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 				c.reply("`" + it.Name + "` " + summarizeInput(it.Input))
 			}
 		}
+	case "context/compacting":
+		c.reply("_Compacting the context..._")
+	case "context/compacted":
+		how := "automatic"
+		if p.Trigger == "manual" {
+			how = "manual"
+		}
+		c.reply(fmt.Sprintf("_Context compacted (%s): %s -> %s tokens._", how, humanTokens(p.PreTokens), humanTokens(p.PostTokens)))
 	case "message/consumed":
 		c.messageConsumed(p.MessageID)
 	case "turn/completed":
@@ -329,4 +340,12 @@ func summarizeInput(raw json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+// humanTokens formats a token count as "36.7k".
+func humanTokens(n int) string {
+	if n < 1000 {
+		return fmt.Sprint(n)
+	}
+	return fmt.Sprintf("%.1fk", float64(n)/1000)
 }

@@ -215,8 +215,13 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"turn_id": "U1"}})
 				var sp struct {
 					MessageID string `json:"message_id"`
+					Content   string `json:"content"`
 				}
 				json.Unmarshal(req.Params, &sp)
+				if strings.HasPrefix(sp.Content, "/compact") {
+					send(map[string]any{"jsonrpc": "2.0", "method": "context/compacting", "params": map[string]any{"thread_id": "T1"}})
+					send(map[string]any{"jsonrpc": "2.0", "method": "context/compacted", "params": map[string]any{"thread_id": "T1", "trigger": "manual", "pre_tokens": 36735, "post_tokens": 1671}})
+				}
 				send(map[string]any{"jsonrpc": "2.0", "method": "message/consumed", "params": map[string]any{"thread_id": "T1", "message_id": sp.MessageID}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
 					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
@@ -563,5 +568,46 @@ func TestSendFilesDisabled(t *testing.T) {
 	}
 	if got := strings.Join(drain(calls), "\n"); strings.Contains(got, "append_system_prompt") {
 		t.Fatalf("no instructions should be sent when disabled:\n%s", got)
+	}
+}
+
+func TestContextCommandsRunCliSlashCommands(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmchan", "p1", "", "!context")
+	fm.waitPost(t, "hello from claude") // the turn finished; the next command starts a new one
+	time.Sleep(200 * time.Millisecond)
+	fm.say("D", "dmchan", "p2", "", "!compact keep the plan")
+	p := fm.waitPost(t, "Context compacted (manual): 36.7k -> 1.7k tokens")
+	if !strings.Contains(p["message"].(string), "36.7k") {
+		t.Fatalf("bad compaction report: %v", p)
+	}
+	fm.waitPost(t, "Compacting the context")
+	time.Sleep(200 * time.Millisecond)
+	fm.say("D", "dmchan", "p3", "", "!cost")
+
+	var got []string
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && len(got) < 3; {
+		for _, c := range drain(calls) {
+			if strings.HasPrefix(c, "turn/start") {
+				got = append(got, c)
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	all := strings.Join(got, "\n")
+	for _, want := range []string{`"content":"/context"`, `"content":"/compact keep the plan"`, `"content":"/cost"`} {
+		if !strings.Contains(all, want) {
+			t.Errorf("missing turn %s in:\n%s", want, all)
+		}
 	}
 }

@@ -21,6 +21,9 @@ const helpText = `**Commands**
 - ` + "`!model [name|default]`" + ` - list models, or switch this conversation's model (a partial name is fine)
 - ` + "`!allow [always]`" + ` / ` + "`!deny [reason]`" + ` - answer a permission prompt (the oldest waiting one); ` + "`always`" + ` also trusts that tool in this conversation
 - ` + "`!trust [tool...|all|off [tool...]]`" + ` - show, extend or revoke the tools this conversation runs without asking
+- ` + "`!context`" + ` - show what fills the context window (tokens by category)
+- ` + "`!compact [instructions]`" + ` - compact the context now, optionally telling the summary what to keep
+- ` + "`!cost`" + ` - token usage and cost of this conversation
 - ` + "`!mode [default|plan|acceptEdits|dontAsk|bypassPermissions]`" + ` - show or change the permission mode
 
 Messages sent while the agent is working are queued as the next turn.`
@@ -68,6 +71,8 @@ func (c *conv) command(in inbound) bool {
 		c.cancel()
 	case "reset":
 		c.reset()
+	case "context", "cost", "compact":
+		c.cliCommand(in, name, args)
 	case "mode":
 		c.setMode(args)
 	case "model":
@@ -82,6 +87,21 @@ func (c *conv) command(in inbound) bool {
 		return false
 	}
 	return true
+}
+
+// cliCommand runs a Claude CLI slash command (/context, /cost, /compact) as a
+// turn: the CLI answers it locally and the app server forwards the output as text.
+func (c *conv) cliCommand(in inbound, name string, args []string) {
+	prompt := "/" + name
+	if len(args) > 0 {
+		prompt += " " + strings.Join(args, " ")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.send(ctx, prompt, in.post.ID); err != nil {
+		slog.Error("cli command failed", "conv", c.key, "cmd", name, "err", err)
+		c.reply("**Error:** " + err.Error())
+	}
 }
 
 // closeThread frees the thread's slot on the server. Servers without
