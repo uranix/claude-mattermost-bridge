@@ -50,6 +50,7 @@ func New(cfg *config.Config, m *mm.Client, app *appclient.Client, me mm.User) (*
 func (b *Bridge) Run(ctx context.Context) {
 	go b.app.Run(ctx)
 	go b.dispatchNotifications(ctx)
+	go b.janitor(ctx)
 	b.mm.Listen(ctx, func(ev mm.Posted) { b.onPosted(ctx, ev) })
 }
 

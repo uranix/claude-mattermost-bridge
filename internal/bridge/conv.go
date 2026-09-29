@@ -33,7 +33,10 @@ type conv struct {
 	channelID string
 	inbox     chan inbound
 
+	opMu sync.Mutex // held while handling a message or idle-closing, so the two never overlap
+
 	mu           sync.Mutex
+	lastActive   time.Time
 	threadID     string
 	mode         string
 	cliSessionID string // Claude CLI session behind threadID; survives restarts via the state file
@@ -65,8 +68,11 @@ func (c *conv) reply(text string) {
 }
 
 func (c *conv) handle(in inbound) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 	c.mu.Lock()
 	c.rootID = in.rootID
+	c.lastActive = time.Now()
 	c.mu.Unlock()
 
 	if strings.HasPrefix(in.text, "!") {
@@ -228,6 +234,7 @@ func (c *conv) onServerReset() {
 
 func (c *conv) turnDone() {
 	c.mu.Lock()
+	c.lastActive = time.Now()
 	if c.active > 0 {
 		c.active--
 	}

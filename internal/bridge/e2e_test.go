@@ -110,6 +110,8 @@ func newFakeApp(t *testing.T, calls chan string) *httptest.Server {
 			switch req.Method {
 			case "thread/start":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"thread_id": "T1", "cli_session_id": "S1"}})
+			case "thread/close":
+				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"closed": true, "cli_session_id": "S1"}})
 			case "thread/attach":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"thread_id": "T1", "cli_session_id": "S1", "attached": true}})
 			case "turn/start":
@@ -260,5 +262,44 @@ func TestResumeAfterRestart(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(cfg.StateFile); strings.Contains(string(b), "S1") {
 		t.Fatalf("!new should delete the saved session: %s", b)
+	}
+}
+
+func TestIdleCloseThenReattach(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+		StateFile: t.TempDir() + "/state.json", IdleClose: 400 * time.Millisecond,
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmchan", "p1", "", "hi")
+	fm.waitPost(t, "hello from claude")
+
+	var log []string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(strings.Join(log, "\n"), "thread/close") {
+		log = append(log, drain(calls)...)
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !strings.Contains(strings.Join(log, "\n"), `thread/close {"thread_id":"T1"}`) {
+		t.Fatalf("idle conversation was not closed:\n%s", strings.Join(log, "\n"))
+	}
+
+	// The next message resumes the same session instead of starting over.
+	fm.say("D", "dmchan", "p2", "", "back again")
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(strings.Join(log, "\n"), "thread/attach") {
+		log = append(log, drain(calls)...)
+		time.Sleep(30 * time.Millisecond)
+	}
+	got := strings.Join(log, "\n")
+	if !strings.Contains(got, `thread/attach {"cli_session_id":"S1"`) || strings.Count(got, "thread/start") != 1 {
+		t.Fatalf("expected one thread/start then thread/attach:\n%s", got)
 	}
 }

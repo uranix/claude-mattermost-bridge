@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -22,7 +23,8 @@ type Config struct {
 	Model          string
 
 	AttachDir string
-	StateFile string // conversation -> CLI session map; "" disables persistence
+	StateFile string        // conversation -> CLI session map; "" disables persistence
+	IdleClose time.Duration // close a conversation's server thread after this much inactivity; 0 disables
 	ShowTools bool
 	Debug     bool
 }
@@ -64,6 +66,14 @@ func Load() (*Config, error) {
 	}
 	if len(c.AllowedUsers) == 0 {
 		return nil, fmt.Errorf("MM_ALLOWED_USERS is empty: the bot would ignore everyone")
+	}
+	c.IdleClose = time.Hour
+	if v := os.Getenv("BRIDGE_IDLE_CLOSE"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return nil, fmt.Errorf("BRIDGE_IDLE_CLOSE: want a duration like 90m, or 0")
+		}
+		c.IdleClose = d
 	}
 	if n, err := strconv.Atoi(os.Getenv("BRIDGE_MAX_FILE_MB")); err == nil && n > 0 {
 		MaxFileBytes = int64(n) << 20

@@ -19,6 +19,9 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
   while the agent works. Long output is split under Mattermost's post limit.
 - A message sent while a turn runs goes through `turn/steer`, i.e. it is queued
   as the next turn.
+- A conversation idle for `BRIDGE_IDLE_CLOSE` (default 1h) has its server thread
+  closed to free the slot and process; the next message re-attaches to the same
+  session, so nothing is lost.
 - Conversation-to-session mappings are kept in a JSON state file, so contexts
   survive restarts (see Limitations); `!new` forgets the saved session.
 - Attached files are downloaded to `BRIDGE_ATTACHMENT_DIR` (mode 600) and passed
@@ -65,8 +68,6 @@ Unknown `!words` are sent to Claude as ordinary text.
   aborted. `CLAUDE_CWD` must not change, since the CLI stores sessions per
   directory; if a saved session cannot be resumed the bridge starts fresh and
   asks the user to resend.
-- Channel-thread conversations are not closed automatically, so they keep a
-  thread slot on the server (default limit 64 per connection) until `!new`.
 - **No live permission prompts.** The server has no `can_use_tool` routing yet;
   denied tools are reported (`turn/permission_denied`) and the user can raise the
   mode with `!mode`. Default mode is `acceptEdits`.
