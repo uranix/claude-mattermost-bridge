@@ -44,6 +44,13 @@ type FileInfo struct {
 	MimeType string `json:"mime_type"`
 }
 
+// Reaction is one "reaction_added" WebSocket event.
+type Reaction struct {
+	UserID string `json:"user_id"`
+	PostID string `json:"post_id"`
+	Emoji  string `json:"emoji_name"`
+}
+
 // Posted is one "posted" WebSocket event.
 type Posted struct {
 	Post        Post
@@ -110,12 +117,25 @@ func (c *Client) User(ctx context.Context, id string) (User, error) {
 	return u, err
 }
 
-func (c *Client) CreatePost(ctx context.Context, channelID, rootID, message string, fileIDs []string) error {
+func (c *Client) CreatePost(ctx context.Context, channelID, rootID, message string, fileIDs []string) (Post, error) {
 	body := map[string]any{"channel_id": channelID, "root_id": rootID, "message": message}
 	if len(fileIDs) > 0 {
 		body["file_ids"] = fileIDs
 	}
-	return c.do(ctx, "POST", "/posts", body, nil)
+	var p Post
+	err := c.do(ctx, "POST", "/posts", body, &p)
+	return p, err
+}
+
+// PatchPost replaces the message of an existing post (used to record the
+// outcome of a permission prompt).
+func (c *Client) PatchPost(ctx context.Context, postID, message string) error {
+	return c.do(ctx, "PUT", "/posts/"+url.PathEscape(postID)+"/patch", map[string]any{"message": message}, nil)
+}
+
+// AddReaction reacts to a post as userID (the bot).
+func (c *Client) AddReaction(ctx context.Context, userID, postID, emoji string) error {
+	return c.do(ctx, "POST", "/reactions", map[string]any{"user_id": userID, "post_id": postID, "emoji_name": emoji}, nil)
 }
 
 // MaxFilesPerPost is Mattermost's limit of attachments on one post.
@@ -214,11 +234,11 @@ func (c *Client) DownloadFile(ctx context.Context, id, dest string) error {
 
 // Listen streams "posted" events until ctx is done, reconnecting with backoff.
 // Events posted while disconnected are not replayed.
-func (c *Client) Listen(ctx context.Context, handle func(Posted)) {
+func (c *Client) Listen(ctx context.Context, onPost func(Posted), onReaction func(Reaction)) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		start := time.Now()
-		err := c.listenOnce(ctx, handle)
+		err := c.listenOnce(ctx, onPost, onReaction)
 		if ctx.Err() != nil {
 			return
 		}
@@ -237,7 +257,7 @@ func (c *Client) Listen(ctx context.Context, handle func(Posted)) {
 	}
 }
 
-func (c *Client) listenOnce(ctx context.Context, handle func(Posted)) error {
+func (c *Client) listenOnce(ctx context.Context, onPost func(Posted), onReaction func(Reaction)) error {
 	u, err := url.Parse(c.base)
 	if err != nil {
 		return err
@@ -274,9 +294,28 @@ func (c *Client) listenOnce(ctx context.Context, handle func(Posted)) error {
 			return err
 		}
 		if ev, ok := parsePosted(data); ok {
-			handle(ev)
+			onPost(ev)
+		} else if r, ok := parseReaction(data); ok {
+			onReaction(r)
 		}
 	}
+}
+
+func parseReaction(data []byte) (Reaction, bool) {
+	var e struct {
+		Event string `json:"event"`
+		Data  struct {
+			Reaction string `json:"reaction"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(data, &e) != nil || e.Event != "reaction_added" {
+		return Reaction{}, false
+	}
+	var r Reaction
+	if json.Unmarshal([]byte(e.Data.Reaction), &r) != nil || r.PostID == "" {
+		return Reaction{}, false
+	}
+	return r, true
 }
 
 func parsePosted(data []byte) (Posted, bool) {

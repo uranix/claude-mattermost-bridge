@@ -27,6 +27,42 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
 - Attached files are downloaded to `BRIDGE_ATTACHMENT_DIR` (mode 600) and passed
   to Claude as local paths; the app server must share the filesystem.
 
+## Permission prompts
+
+When Claude wants to run a tool that its permission mode does not pre-approve
+(for example a shell command in `default` or `acceptEdits` mode), the bridge asks
+in the chat instead of silently refusing. The prompt post shows what is about to
+happen (the command, the file and a preview of its content, or an edit's old and
+new text) and offers three reactions that the bot adds itself, so each is one
+click away:
+
+| Reaction | Effect |
+|---|---|
+| :white_check_mark: | allow this call |
+| :x: | deny; Claude is told and reacts accordingly |
+| :fast_forward: | allow and apply the CLI's suggestion, e.g. "accept file edits without asking for this session". Shown only when there is a suggestion, and the post says exactly what it does. |
+
+Or reply with `!allow`, `!allow always` (same as :fast_forward:) or `!deny [reason]`,
+which answer the longest-waiting prompt. The post is edited to record who decided
+what. A prompt nobody answers is denied automatically after the app server's
+`--permission-timeout` (default 5 minutes), and the post says so. `!cancel`
+withdraws pending prompts.
+
+- Only usernames in `MM_ALLOWED_USERS` count; reactions from anyone else, and the
+  bot's own, are ignored. In a shared channel thread any allowed user can answer.
+- A suggestion can be a **persistent** rule: for Bash it may be written to the
+  project's `.claude/settings.local.json`. The prompt says so ("saved to
+  localSettings"); use :white_check_mark: when you only mean this one call.
+- Why reactions and not buttons: Mattermost buttons make the *Mattermost server*
+  call a URL, so the bridge would need to be reachable from it, and Mattermost
+  blocks calls to private addresses by default. Reactions arrive on the WebSocket
+  the bridge already has open.
+- `BRIDGE_PERMISSION_PROMPTS=0` restores the old behaviour: denied tools are
+  reported afterwards and `!mode` raises the mode. `CLAUDE_PERMISSION_MODE`
+  decides what gets asked at all: `default` asks for edits and commands,
+  `acceptEdits` only for commands, `bypassPermissions` never asks.
+- Needs an app server with `permission/respond` (opt-in via `permission_prompts`).
+
 ## Files and images from Claude
 
 The bridge tells Claude (via the server's `append_system_prompt`, on every start
@@ -68,6 +104,7 @@ Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
 | `!new` | fresh context (also `!clear`); closes the old thread on the server |
 | `!cancel` | interrupt running work and queued messages |
 | `!model [name]` | list the server's models, or switch this conversation's model (partial names work; `default` resets) |
+| `!allow [always]`, `!deny [reason]` | answer the oldest permission prompt |
 | `!mode [m]` | show / change permission mode via `approval/respond` |
 
 The model list comes from the Claude CLI through the server's `model/list`, so it
@@ -130,9 +167,6 @@ conversations. After changing `bot.env`, restart the bridge.
   aborted. `CLAUDE_CWD` must not change, since the CLI stores sessions per
   directory; if a saved session cannot be resumed the bridge starts fresh and
   asks the user to resend.
-- **No live permission prompts.** The server has no `can_use_tool` routing yet;
-  denied tools are reported (`turn/permission_denied`) and the user can raise the
-  mode with `!mode`. Default mode is `acceptEdits`.
 - Posts made while the Mattermost WebSocket is down are not replayed.
 - Posts edited or deleted after sending are ignored.
 

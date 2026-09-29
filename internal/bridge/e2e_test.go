@@ -22,20 +22,41 @@ import (
 )
 
 type fakeMM struct {
-	mu      sync.Mutex
-	posts   []map[string]any
-	uploads []string // "channel:filename:content"
-	ws      chan []byte
+	mu        sync.Mutex
+	posts     []map[string]any
+	uploads   []string          // "channel:filename:content"
+	reactions []string          // "postID:emoji" added by the bot
+	patches   map[string]string // postID -> latest message
+	ws        chan []byte
 }
 
 func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
-	f := &fakeMM{ws: make(chan []byte, 8)}
+	f := &fakeMM{ws: make(chan []byte, 8), patches: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/users/me", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(mm.User{ID: "bot1", Username: "claude"})
 	})
 	mux.HandleFunc("/api/v4/users/alice", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(mm.User{ID: "alice", Username: "Alice"})
+	})
+	mux.HandleFunc("/api/v4/users/mallory", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(mm.User{ID: "mallory", Username: "mallory"})
+	})
+	mux.HandleFunc("POST /api/v4/reactions", func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]string
+		json.NewDecoder(r.Body).Decode(&b)
+		f.mu.Lock()
+		f.reactions = append(f.reactions, b["post_id"]+":"+b["emoji_name"])
+		f.mu.Unlock()
+		w.Write([]byte("{}"))
+	})
+	mux.HandleFunc("PUT /api/v4/posts/{id}/patch", func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]string
+		json.NewDecoder(r.Body).Decode(&b)
+		f.mu.Lock()
+		f.patches[r.PathValue("id")] = b["message"]
+		f.mu.Unlock()
+		w.Write([]byte("{}"))
 	})
 	mux.HandleFunc("/api/v4/users/bot1/typing", func(w http.ResponseWriter, r *http.Request) {})
 	mux.HandleFunc("/api/v4/files", func(w http.ResponseWriter, r *http.Request) {
@@ -68,9 +89,11 @@ func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
 		var p map[string]any
 		json.NewDecoder(r.Body).Decode(&p)
 		f.mu.Lock()
+		id := "post" + strconv.Itoa(len(f.posts)+1)
+		p["id"] = id
 		f.posts = append(f.posts, p)
 		f.mu.Unlock()
-		w.Write([]byte("{}"))
+		json.NewEncoder(w).Encode(map[string]any{"id": id})
 	})
 	mux.HandleFunc("/api/v4/websocket", func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
@@ -93,6 +116,31 @@ func (f *fakeMM) say(channelType, channelID, id, rootID, text string) {
 	post, _ := json.Marshal(mm.Post{ID: id, ChannelID: channelID, UserID: "alice", RootID: rootID, Message: text})
 	ev, _ := json.Marshal(map[string]any{"event": "posted", "data": map[string]any{"post": string(post), "channel_type": channelType}})
 	f.ws <- ev
+}
+
+func (f *fakeMM) react(userID, postID, emoji string) {
+	r, _ := json.Marshal(mm.Reaction{UserID: userID, PostID: postID, Emoji: emoji})
+	ev, _ := json.Marshal(map[string]any{"event": "reaction_added", "data": map[string]any{"reaction": string(r)}})
+	f.ws <- ev
+}
+
+// waitPatch waits until the post's message was updated to contain text.
+func (f *fakeMM) waitPatch(t *testing.T, postID, contains string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		m := f.patches[postID]
+		f.mu.Unlock()
+		if strings.Contains(m, contains) {
+			return m
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t.Fatalf("post %s was never patched with %q; patches: %v", postID, contains, f.patches)
+	return ""
 }
 
 func (f *fakeMM) waitPost(t *testing.T, contains string) map[string]any {

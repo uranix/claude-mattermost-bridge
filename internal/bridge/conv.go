@@ -40,11 +40,12 @@ type conv struct {
 	lastActive   time.Time
 	threadID     string
 	mode         string
-	model        string // "" = server/CLI default
-	cliSessionID string // Claude CLI session behind threadID; survives restarts via the state file
-	attached     bool   // threadID was attached to a saved session and has not completed a turn yet
-	active       int    // turns sent to the app server and not yet finished
-	rootID       string // reply target of the latest inbound message
+	model        string    // "" = server/CLI default
+	cliSessionID string    // Claude CLI session behind threadID; survives restarts via the state file
+	attached     bool      // threadID was attached to a saved session and has not completed a turn yet
+	prompts      []*prompt // permission prompts waiting for an answer, oldest first
+	active       int       // turns sent to the app server and not yet finished
+	rootID       string    // reply target of the latest inbound message
 	stopTyping   context.CancelFunc
 }
 
@@ -189,6 +190,9 @@ func (c *conv) ensureThread(ctx context.Context) error {
 	if c.b.cfg.SendFiles {
 		params["append_system_prompt"] = filePrompt
 	}
+	if c.b.cfg.PermissionPrompts {
+		params["permission_prompts"] = true
+	}
 	if c.b.cfg.Cwd != "" {
 		params["cwd"] = c.b.cfg.Cwd
 	}
@@ -252,6 +256,7 @@ func (c *conv) onServerReset() {
 	if stop != nil {
 		stop()
 	}
+	c.dropPrompts("_The connection to the agent was lost: this request was dropped._")
 	if hadWork {
 		c.reply("_Connection to the agent server was lost and the running request was aborted. Your next message resumes the conversation._")
 	}

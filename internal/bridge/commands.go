@@ -18,6 +18,7 @@ const helpText = `**Commands**
 - ` + "`!new`" + ` - start a fresh context (the old one keeps running until it finishes)
 - ` + "`!cancel`" + ` - interrupt the running work and drop queued messages
 - ` + "`!model [name|default]`" + ` - list models, or switch this conversation's model (a partial name is fine)
+- ` + "`!allow [always]`" + ` / ` + "`!deny [reason]`" + ` - answer a permission prompt (the oldest waiting one)
 - ` + "`!mode [default|plan|acceptEdits|dontAsk|bypassPermissions]`" + ` - show or change the permission mode
 
 Messages sent while the agent is working are queued as the next turn.`
@@ -34,7 +35,7 @@ func (c *conv) command(in inbound) bool {
 		c.reply(helpText)
 	case "status":
 		c.mu.Lock()
-		tid, mode, active, model := c.threadID, c.mode, c.active, c.model
+		tid, mode, active, model, waiting := c.threadID, c.mode, c.active, c.model, len(c.prompts)
 		c.mu.Unlock()
 		if model == "" {
 			model = "default"
@@ -46,7 +47,7 @@ func (c *conv) command(in inbound) bool {
 		if cwd == "" {
 			cwd = "(server default)"
 		}
-		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nModel: `%s`\nRunning turns: %d\nWorking directory: `%s`", tid, mode, model, active, cwd))
+		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nModel: `%s`\nRunning turns: %d\nWaiting for approval: %d\nWorking directory: `%s`", tid, mode, model, active, waiting, cwd))
 	case "new", "clear":
 		c.mu.Lock()
 		tid := c.threadID
@@ -67,6 +68,10 @@ func (c *conv) command(in inbound) bool {
 		c.setMode(args)
 	case "model":
 		c.modelCommand(args)
+	case "allow":
+		c.answerOldest("allow", len(args) > 0 && strings.EqualFold(args[0], "always"), "", in.user)
+	case "deny":
+		c.answerOldest("deny", false, strings.Join(args, " "), in.user)
 	default:
 		return false
 	}

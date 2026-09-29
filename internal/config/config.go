@@ -23,29 +23,31 @@ type Config struct {
 	PermissionMode string
 	Model          string
 
-	AttachDir string
-	StateFile string        // conversation -> CLI session map; "" disables persistence
-	IdleClose time.Duration // close a conversation's server thread after this much inactivity; 0 disables
-	SendFiles bool          // upload files the agent references in its replies
-	SendRoots []string      // extra directories (besides cwd, attachments, /tmp) files may be sent from
-	ShowTools bool
-	Debug     bool
+	AttachDir         string
+	StateFile         string        // conversation -> CLI session map; "" disables persistence
+	IdleClose         time.Duration // close a conversation's server thread after this much inactivity; 0 disables
+	PermissionPrompts bool          // ask in chat before tools that need permission run
+	SendFiles         bool          // upload files the agent references in its replies
+	SendRoots         []string      // extra directories (besides cwd, attachments, /tmp) files may be sent from
+	ShowTools         bool
+	Debug             bool
 }
 
 func Load() (*Config, error) {
 	c := &Config{
-		MattermostURL:  strings.TrimRight(os.Getenv("MM_URL"), "/"),
-		AppServerURL:   getenv("APP_SERVER_URL", "ws://127.0.0.1:3284"),
-		Cwd:            os.Getenv("CLAUDE_CWD"),
-		PermissionMode: getenv("CLAUDE_PERMISSION_MODE", "acceptEdits"),
-		Model:          os.Getenv("CLAUDE_MODEL"),
-		AttachDir:      getenv("BRIDGE_ATTACHMENT_DIR", "attachments"),
-		StateFile:      getenv("BRIDGE_STATE_FILE", "state.json"),
-		AllowChannels:  truthy(os.Getenv("MM_ALLOW_CHANNELS")),
-		ShowTools:      truthy(os.Getenv("BRIDGE_SHOW_TOOLS")),
-		SendFiles:      getenv("BRIDGE_SEND_FILES", "1") != "0",
-		Debug:          truthy(os.Getenv("BRIDGE_DEBUG")),
-		AllowedUsers:   map[string]bool{},
+		MattermostURL:     strings.TrimRight(os.Getenv("MM_URL"), "/"),
+		AppServerURL:      getenv("APP_SERVER_URL", "ws://127.0.0.1:3284"),
+		Cwd:               os.Getenv("CLAUDE_CWD"),
+		PermissionMode:    getenv("CLAUDE_PERMISSION_MODE", "acceptEdits"),
+		Model:             os.Getenv("CLAUDE_MODEL"),
+		AttachDir:         getenv("BRIDGE_ATTACHMENT_DIR", "attachments"),
+		StateFile:         getenv("BRIDGE_STATE_FILE", "state.json"),
+		AllowChannels:     truthy(os.Getenv("MM_ALLOW_CHANNELS")),
+		ShowTools:         truthy(os.Getenv("BRIDGE_SHOW_TOOLS")),
+		SendFiles:         getenv("BRIDGE_SEND_FILES", "1") != "0",
+		PermissionPrompts: getenv("BRIDGE_PERMISSION_PROMPTS", "1") != "0",
+		Debug:             truthy(os.Getenv("BRIDGE_DEBUG")),
+		AllowedUsers:      map[string]bool{},
 	}
 	if f := os.Getenv("APP_SERVER_KEY_FILE"); f != "" {
 		u, err := withKeyFile(c.AppServerURL, f)

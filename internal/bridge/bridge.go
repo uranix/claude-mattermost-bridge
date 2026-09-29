@@ -25,8 +25,9 @@ type Bridge struct {
 	mention *regexp.Regexp
 
 	mu       sync.Mutex
-	convs    map[string]*conv // by conversation key
-	byThread map[string]*conv // by app-server thread id
+	convs    map[string]*conv   // by conversation key
+	byThread map[string]*conv   // by app-server thread id
+	byPost   map[string]*prompt // permission prompts waiting for an answer, by post id
 
 	state *store
 
@@ -43,6 +44,7 @@ func New(cfg *config.Config, m *mm.Client, app *appclient.Client, me mm.User) (*
 		mention:  regexp.MustCompile(`(?i)(^|[^\w.@-])@` + regexp.QuoteMeta(me.Username) + `\b`),
 		convs:    map[string]*conv{},
 		byThread: map[string]*conv{},
+		byPost:   map[string]*prompt{},
 	}, nil
 }
 
@@ -51,7 +53,7 @@ func (b *Bridge) Run(ctx context.Context) {
 	go b.app.Run(ctx)
 	go b.dispatchNotifications(ctx)
 	go b.janitor(ctx)
-	b.mm.Listen(ctx, func(ev mm.Posted) { b.onPosted(ctx, ev) })
+	b.mm.Listen(ctx, func(ev mm.Posted) { b.onPosted(ctx, ev) }, func(r mm.Reaction) { go b.onReaction(ctx, r) })
 }
 
 func (b *Bridge) username(ctx context.Context, id string) (string, bool) {
@@ -154,14 +156,14 @@ func (b *Bridge) postFiles(channelID, rootID, text string, fileIDs []string) {
 			n := min(len(fileIDs), mm.MaxFilesPerPost)
 			ids, fileIDs = fileIDs[:n], fileIDs[n:]
 		}
-		if err := b.mm.CreatePost(ctx, channelID, rootID, part, ids); err != nil {
+		if _, err := b.mm.CreatePost(ctx, channelID, rootID, part, ids); err != nil {
 			slog.Error("post failed", "channel", channelID, "err", err)
 			return
 		}
 	}
 	for len(fileIDs) > 0 { // more files than fit on one post
 		n := min(len(fileIDs), mm.MaxFilesPerPost)
-		if err := b.mm.CreatePost(ctx, channelID, rootID, "", fileIDs[:n]); err != nil {
+		if _, err := b.mm.CreatePost(ctx, channelID, rootID, "", fileIDs[:n]); err != nil {
 			slog.Error("post failed", "channel", channelID, "err", err)
 			return
 		}
@@ -199,6 +201,8 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 
 	var p struct {
 		ThreadID  string          `json:"thread_id"`
+		RequestID string          `json:"request_id"`
+		Reason    string          `json:"reason"`
 		TurnID    string          `json:"turn_id"`
 		Status    string          `json:"status"`
 		Error     string          `json:"error"`
@@ -247,7 +251,19 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 			return
 		}
 		c.reply("**Error:** " + p.Error)
+	case "approval/requested":
+		var a approvalRequest
+		if json.Unmarshal(n.Params, &a) == nil {
+			c.askPermission(a)
+		}
+	case "approval/cancelled":
+		if pr := c.findPrompt(p.RequestID); pr != nil {
+			b.expirePrompt(pr, p.Reason)
+		}
 	case "turn/permission_denied":
+		if b.cfg.PermissionPrompts {
+			return // the user was asked; the outcome is on the prompt
+		}
 		c.reply(fmt.Sprintf("Permission denied for `%s` %s\nIf this is fine, run `!mode acceptEdits` (or `!mode bypassPermissions` if the server allows it) and repeat the request.",
 			p.ToolName, summarizeInput(p.ToolInput)))
 	}
