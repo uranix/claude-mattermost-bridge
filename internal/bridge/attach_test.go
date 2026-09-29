@@ -15,7 +15,8 @@ func TestExtractRefs(t *testing.T) {
 		"![loss curve](/tmp/out/loss.png)\n" +
 		"[report.csv](</home/u/my dir/report.csv>)\n" +
 		"[docs](https://example.com/x)\n" + // web link: stays
-		"See [notes](/tmp/notes.txt) inline.\n" + // not standalone: stays
+		"See [notes](/tmp/notes.txt): the log, and `[x](/tmp/code.txt)` stays.\n" + // absolute inline link is taken, code span stays
+		"A [relative](inline/path.txt) link stays.\n" +
 		"[rel](sub/data.bin)\n" +
 		"[sb](sandbox:/tmp/sandboxed.log)\n" +
 		"```\n" +
@@ -27,6 +28,7 @@ func TestExtractRefs(t *testing.T) {
 	want := []fileRef{
 		{"loss curve", "/tmp/out/loss.png", true},
 		{"report.csv", "/home/u/my dir/report.csv", false},
+		{"notes", "/tmp/notes.txt", false},
 		{"rel", "sub/data.bin", false},
 		{"sb", "/tmp/sandboxed.log", false},
 	}
@@ -38,7 +40,7 @@ func TestExtractRefs(t *testing.T) {
 			t.Errorf("ref %d = %+v, want %+v", i, refs[i], want[i])
 		}
 	}
-	for _, keep := range []string{"Here are the results.", "https://example.com/x", "See [notes](/tmp/notes.txt) inline.", "![in code](/etc/passwd)", "[anchor](#top)"} {
+	for _, keep := range []string{"Here are the results.", "https://example.com/x", "See `notes`: the log, and `[x](/tmp/code.txt)` stays.", "A [relative](inline/path.txt) link stays.", "![in code](/etc/passwd)", "[anchor](#top)"} {
 		if !strings.Contains(rest, keep) {
 			t.Errorf("rest lost %q:\n%s", keep, rest)
 		}
@@ -155,5 +157,16 @@ func TestResolveSendPath(t *testing.T) {
 
 	if _, err := (&Bridge{cfg: &config.Config{}}).resolveSendPath("relative.txt"); err == nil {
 		t.Error("a relative path without a cwd must be refused")
+	}
+}
+
+func TestExtractRefsInlineAfterLabel(t *testing.T) {
+	rest, refs := extractRefs("[cv.F90](/tmp/loki_ex/cv.F90): single-column form.\nRun `gfortran [a](/tmp/b)` then see [test_cv.F90](/tmp/loki_ex/test_cv.F90).")
+	if len(refs) != 2 || refs[0].Target != "/tmp/loki_ex/cv.F90" || refs[1].Target != "/tmp/loki_ex/test_cv.F90" {
+		t.Fatalf("refs = %+v", refs)
+	}
+	want := "`cv.F90`: single-column form.\nRun `gfortran [a](/tmp/b)` then see `test_cv.F90`."
+	if rest != want {
+		t.Fatalf("rest = %q, want %q", rest, want)
 	}
 }

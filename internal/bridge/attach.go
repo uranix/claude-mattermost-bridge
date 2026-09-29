@@ -32,10 +32,14 @@ type fileRef struct {
 // A standalone markdown link or image on its own line. Paths with spaces use <...>.
 var refLine = regexp.MustCompile(`^(!?)\[([^\]]*)\]\((?:<([^>]+)>|([^)\s]+))\)$`)
 
+// A link or image to an absolute local path inside a line of text.
+var inlineRef = regexp.MustCompile(`(!?)\[([^\]]*)\]\((?:<(?:sandbox:)?(/[^>]+)>|(?:sandbox:)?(/[^)\s]+))\)`)
+
 var hasScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.\-]*:`)
 
-// extractRefs removes standalone local-file links/images from text (outside
-// code fences) and returns them. Web links and links inside sentences stay.
+// extractRefs removes local-file links/images from text (outside code fences
+// and code spans) and returns them: standalone lines, and links to absolute
+// paths inside a line. Web links and relative links inside sentences stay.
 func extractRefs(text string) (rest string, refs []fileRef) {
 	var kept []string
 	fenced := false
@@ -58,9 +62,35 @@ func extractRefs(text string) (rest string, refs []fileRef) {
 				}
 			}
 		}
+		if !fenced {
+			line, refs = extractInline(line, refs)
+		}
 		kept = append(kept, line)
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n")), refs
+}
+
+// extractInline pulls links to absolute local paths out of a line of prose
+// (agents often write "[a.f90](/tmp/a.f90): the kernel"), leaving the label in
+// code style. Text inside `code spans` is left alone.
+func extractInline(line string, refs []fileRef) (string, []fileRef) {
+	parts := strings.Split(line, "`")
+	for i := 0; i < len(parts); i += 2 { // even parts are outside code spans
+		parts[i] = inlineRef.ReplaceAllStringFunc(parts[i], func(m string) string {
+			sm := inlineRef.FindStringSubmatch(m)
+			target := sm[3]
+			if target == "" {
+				target = sm[4]
+			}
+			refs = append(refs, fileRef{Label: sm[2], Target: target, Image: sm[1] == "!"})
+			name := sm[2]
+			if name == "" {
+				name = filepath.Base(target)
+			}
+			return "`" + name + "`"
+		})
+	}
+	return strings.Join(parts, "`"), refs
 }
 
 // localTarget reports whether a link target names a local file, and its path.

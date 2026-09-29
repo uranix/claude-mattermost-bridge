@@ -99,6 +99,10 @@ line, outside code blocks:
 [report.csv](/absolute/path/report.csv)
 ```
 
+Links to absolute paths are also picked up inside a line of prose
+(`[a.f90](/tmp/a.f90): the kernel`) and left in the text as `a.f90`; links in code
+spans and fences, web links and relative links inside prose are left alone.
+
 Such lines are removed from the text, the files are uploaded to Mattermost and
 attached to that message. Details:
 
