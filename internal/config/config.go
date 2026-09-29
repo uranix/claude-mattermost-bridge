@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,13 @@ func Load() (*Config, error) {
 		Debug:          truthy(os.Getenv("BRIDGE_DEBUG")),
 		AllowedUsers:   map[string]bool{},
 	}
+	if f := os.Getenv("APP_SERVER_KEY_FILE"); f != "" {
+		u, err := withKeyFile(c.AppServerURL, f)
+		if err != nil {
+			return nil, err
+		}
+		c.AppServerURL = u
+	}
 	if c.MattermostURL == "" {
 		return nil, fmt.Errorf("MM_URL is required")
 	}
@@ -87,6 +95,27 @@ func Load() (*Config, error) {
 		MaxFileBytes = int64(n) << 20
 	}
 	return c, nil
+}
+
+// withKeyFile adds the auth key stored in keyFile to the app server URL as ?key=,
+// so the secret can live in a mode-600 file instead of the environment file.
+func withKeyFile(rawURL, keyFile string) (string, error) {
+	b, err := os.ReadFile(keyFile)
+	if err != nil {
+		return "", fmt.Errorf("read APP_SERVER_KEY_FILE: %w", err)
+	}
+	key := strings.TrimSpace(string(b))
+	if key == "" {
+		return "", fmt.Errorf("APP_SERVER_KEY_FILE %s is empty", keyFile)
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("APP_SERVER_URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("key", key)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // MaxFileBytes caps a single downloaded attachment.

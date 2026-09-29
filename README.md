@@ -92,7 +92,33 @@ Unknown `!words` are sent to Claude as ordinary text.
    ./claude-mattermost-bridge
    ```
 
-`deploy/claude-mattermost-bridge.service` is a user-level systemd unit.
+## Running as systemd user services
+
+`deploy/` has units for both processes. The app server keeps its auth key in a
+mode-600 file (`--key-file`, created on first start, reused afterwards) and the
+bridge reads the same file (`APP_SERVER_KEY_FILE`), so restarts of either side
+need no reconfiguration and the key never appears in logs or unit files.
+
+```sh
+# binaries
+(cd ~/claude-app-server-go && CGO_ENABLED=0 go build -o ~/.local/bin/claude-app-server ./cmd/claude-app-server)
+CGO_ENABLED=0 go build -o ~/.local/bin/claude-mattermost-bridge ./cmd/claude-mattermost-bridge
+
+# config: absolute paths only (EnvironmentFile does not expand ~ or $HOME)
+mkdir -p ~/.config/claude-mattermost ~/.config/systemd/user
+install -m 600 bot.env.example ~/.config/claude-mattermost/bot.env   # then edit it
+cp deploy/*.service ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable --now claude-app-server claude-mattermost-bridge
+loginctl enable-linger $USER      # keep running after logout
+journalctl --user -u claude-mattermost-bridge -f
+```
+
+The services get only a minimal environment (`HOME`, `PATH`), so `claude` must
+be logged in through its own config rather than shell variables. Restart the
+app server after upgrading it; the bridge reconnects by itself and resumes
+conversations. After changing `bot.env`, restart the bridge.
 
 ## Limitations
 

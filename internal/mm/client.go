@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/uranix/claude-mattermost-bridge/internal/wsutil"
 )
 
 type User struct {
@@ -259,11 +261,15 @@ func (c *Client) listenOnce(ctx context.Context, handle func(Posted)) error {
 	conn.SetReadLimit(4 << 20)
 	slog.Info("mattermost websocket connected")
 
+	// Liveness: a read deadline would fire on a healthy but quiet link, because
+	// control frames are handled inside Read without returning. Ping instead, and
+	// drop the connection when a ping is not answered.
+	rctx, stop := context.WithCancel(ctx)
+	defer stop()
+	go wsutil.KeepAlive(rctx, conn, wsutil.PingInterval, wsutil.PingTimeout, stop)
+
 	for {
-		// The server pings regularly; silence for this long means a dead link.
-		rctx, rcancel := context.WithTimeout(ctx, 3*time.Minute)
 		_, data, err := conn.Read(rctx)
-		rcancel()
 		if err != nil {
 			return err
 		}

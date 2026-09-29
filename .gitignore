@@ -2,3 +2,4 @@ bot.env
 state.json
 /claude-mattermost-bridge
 *.attachments/
+run/

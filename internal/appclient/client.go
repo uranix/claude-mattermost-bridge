@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/uranix/claude-mattermost-bridge/internal/wsutil"
 )
 
 // Error codes of claude-app-server.
@@ -113,6 +115,7 @@ func (c *Client) session(ctx context.Context) error {
 
 	sctx, stop := context.WithCancel(ctx)
 	defer stop()
+	go wsutil.KeepAlive(sctx, conn, wsutil.PingInterval, wsutil.PingTimeout, stop) // detect a dead link; reads have no deadline
 	readErr := make(chan error, 1)
 	go func() { readErr <- c.readLoop(sctx, conn) }()
 

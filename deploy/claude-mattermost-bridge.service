@@ -1,11 +1,14 @@
 [Unit]
 Description=Mattermost <-> claude-app-server bridge
-After=network-online.target
+Wants=claude-app-server.service
+After=claude-app-server.service network-online.target
 
 [Service]
-EnvironmentFile=%h/claude-mattermost-bridge/bot.env
-WorkingDirectory=%h/claude-mattermost-bridge
-ExecStart=%h/claude-mattermost-bridge/claude-mattermost-bridge
+# systemd does not expand $HOME or ~ in EnvironmentFile: use absolute paths there.
+EnvironmentFile=%h/.config/claude-mattermost/bot.env
+ExecStart=%h/.local/bin/claude-mattermost-bridge
+# The bridge reconnects to the app server and to Mattermost by itself, so a
+# server restart does not need a bridge restart.
 Restart=on-failure
 RestartSec=5
 

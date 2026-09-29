@@ -1,0 +1,14 @@
+[Unit]
+Description=claude-app-server (Claude Code over JSON-RPC/WebSocket, loopback only)
+After=network.target
+
+[Service]
+# The auth key lives in a mode-600 file, created on first start and reused afterwards.
+ExecStart=%h/.local/bin/claude-app-server start --host 127.0.0.1 --port 3284 --key-file %h/.config/claude-mattermost/app-server.key
+# The server looks up `claude` on PATH.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
