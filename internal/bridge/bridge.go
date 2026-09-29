@@ -119,9 +119,10 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 	defer b.mu.Unlock()
 	c, ok := b.convs[key]
 	if !ok {
-		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, inbox: make(chan inbound, 64)}
+		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, model: b.cfg.Model, inbox: make(chan inbound, 64)}
 		if st, ok := b.state.get(key); ok {
 			c.cliSessionID = st.CliSessionID
+			c.model = st.Model // "" means the user chose the default
 			if st.Mode != "" {
 				c.mode = st.Mode
 			}

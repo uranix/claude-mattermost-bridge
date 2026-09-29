@@ -37,7 +37,13 @@ Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
 | `!status` | thread id, permission mode, running turns |
 | `!new` | fresh context (also `!clear`); closes the old thread on the server |
 | `!cancel` | interrupt running work and queued messages |
+| `!model [name]` | list the server's models, or switch this conversation's model (partial names work; `default` resets) |
 | `!mode [m]` | show / change permission mode via `approval/respond` |
+
+The model list comes from the Claude CLI through the server's `model/list`, so it
+is always current. A selection is per conversation, is saved in the state file,
+and applies immediately to a running thread (`thread/set_model`). `CLAUDE_MODEL`
+sets the initial model for new conversations.
 
 Unknown `!words` are sent to Claude as ordinary text.
 

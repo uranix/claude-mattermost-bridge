@@ -15,6 +15,7 @@ type convState struct {
 	ChannelID    string `json:"channel_id"`
 	CliSessionID string `json:"cli_session_id"`
 	Mode         string `json:"mode,omitempty"`
+	Model        string `json:"model,omitempty"` // "" = default
 }
 
 // store is a small JSON file keyed by conversation key. A path of "" keeps

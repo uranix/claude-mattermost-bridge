@@ -110,6 +110,13 @@ func newFakeApp(t *testing.T, calls chan string) *httptest.Server {
 			switch req.Method {
 			case "thread/start":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"thread_id": "T1", "cli_session_id": "S1"}})
+			case "model/list":
+				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{
+					"models": []string{"opus", "haiku"},
+					"model_info": []map[string]any{
+						{"value": "opus", "resolved_model": "claude-opus-5-5", "display_name": "Opus", "description": "big"},
+						{"value": "haiku", "resolved_model": "claude-haiku-4-5", "display_name": "Haiku", "description": "fast"},
+					}, "live": true}})
 			case "thread/close":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"closed": true, "cli_session_id": "S1"}})
 			case "thread/attach":
@@ -301,5 +308,59 @@ func TestIdleCloseThenReattach(t *testing.T) {
 	got := strings.Join(log, "\n")
 	if !strings.Contains(got, `thread/attach {"cli_session_id":"S1"`) || strings.Count(got, "thread/start") != 1 {
 		t.Fatalf("expected one thread/start then thread/attach:\n%s", got)
+	}
+}
+
+func TestModelCommand(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(), StateFile: t.TempDir() + "/state.json",
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmchan", "p1", "", "!model")
+	p := fm.waitPost(t, "Available")
+	if m := p["message"].(string); !strings.Contains(m, "`opus` - Opus: big") || !strings.Contains(m, "Model: `default`") {
+		t.Fatalf("bad listing: %s", m)
+	}
+
+	// Selecting before any thread exists just remembers it...
+	fm.say("D", "dmchan", "p2", "", "!model hai")
+	fm.waitPost(t, "Model: `haiku`.")
+	fm.say("D", "dmchan", "p3", "", "work")
+	fm.waitPost(t, "hello from claude")
+	var start string
+	for _, c := range drain(calls) {
+		if strings.HasPrefix(c, "thread/start") {
+			start = c
+		}
+	}
+	if !strings.Contains(start, `"model":"haiku"`) {
+		t.Fatalf("thread/start should carry the selected model: %s", start)
+	}
+
+	// ...and with a live thread it switches through thread/set_model.
+	fm.say("D", "dmchan", "p4", "", "!model opus")
+	fm.waitPost(t, "Model: `opus`.")
+	var got string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(got, "thread/set_model") {
+		got += strings.Join(drain(calls), "\n")
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(got, `thread/set_model {"model":"opus","thread_id":"T1"}`) {
+		t.Fatalf("expected a live switch: %s", got)
+	}
+
+	// Ambiguous and unknown names change nothing.
+	fm.say("D", "dmchan", "p5", "", "!model zzz")
+	fm.waitPost(t, "Unknown model")
+	if b, _ := os.ReadFile(cfg.StateFile); !strings.Contains(string(b), `"model": "opus"`) {
+		t.Fatalf("selection should be persisted: %s", b)
 	}
 }

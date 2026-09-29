@@ -17,6 +17,7 @@ const helpText = `**Commands**
 - ` + "`!status`" + ` - thread, permission mode, running turns
 - ` + "`!new`" + ` - start a fresh context (the old one keeps running until it finishes)
 - ` + "`!cancel`" + ` - interrupt the running work and drop queued messages
+- ` + "`!model [name|default]`" + ` - list models, or switch this conversation's model (a partial name is fine)
 - ` + "`!mode [default|plan|acceptEdits|dontAsk|bypassPermissions]`" + ` - show or change the permission mode
 
 Messages sent while the agent is working are queued as the next turn.`
@@ -33,8 +34,11 @@ func (c *conv) command(in inbound) bool {
 		c.reply(helpText)
 	case "status":
 		c.mu.Lock()
-		tid, mode, active := c.threadID, c.mode, c.active
+		tid, mode, active, model := c.threadID, c.mode, c.active, c.model
 		c.mu.Unlock()
+		if model == "" {
+			model = "default"
+		}
 		if tid == "" {
 			tid = "(none yet)"
 		}
@@ -42,7 +46,7 @@ func (c *conv) command(in inbound) bool {
 		if cwd == "" {
 			cwd = "(server default)"
 		}
-		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nRunning turns: %d\nWorking directory: `%s`", tid, mode, active, cwd))
+		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nModel: `%s`\nRunning turns: %d\nWorking directory: `%s`", tid, mode, model, active, cwd))
 	case "new", "clear":
 		c.mu.Lock()
 		tid := c.threadID
@@ -61,6 +65,8 @@ func (c *conv) command(in inbound) bool {
 		c.cancel()
 	case "mode":
 		c.setMode(args)
+	case "model":
+		c.modelCommand(args)
 	default:
 		return false
 	}
@@ -150,11 +156,7 @@ func (c *conv) setMode(args []string) {
 	}
 	c.mu.Lock()
 	c.mode = res.Mode
-	sid := c.cliSessionID
 	c.mu.Unlock()
-	if st, ok := c.b.state.get(c.key); ok && st.CliSessionID == sid {
-		st.Mode = res.Mode
-		c.b.state.put(c.key, st)
-	}
+	c.persistSettings()
 	c.reply("Permission mode: `" + res.Mode + "`")
 }

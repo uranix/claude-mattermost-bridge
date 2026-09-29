@@ -39,6 +39,7 @@ type conv struct {
 	lastActive   time.Time
 	threadID     string
 	mode         string
+	model        string // "" = server/CLI default
 	cliSessionID string // Claude CLI session behind threadID; survives restarts via the state file
 	attached     bool   // threadID was attached to a saved session and has not completed a turn yet
 	active       int    // turns sent to the app server and not yet finished
@@ -158,12 +159,15 @@ func (c *conv) markIdle() {
 
 func (c *conv) ensureThread(ctx context.Context) error {
 	c.mu.Lock()
-	tid, mode, sid := c.threadID, c.mode, c.cliSessionID
+	tid, mode, sid, model := c.threadID, c.mode, c.cliSessionID, c.model
 	c.mu.Unlock()
 	if tid != "" {
 		return nil
 	}
 	params := map[string]any{"permission_mode": mode}
+	if model != "" {
+		params["model"] = model
+	}
 	if c.b.cfg.Cwd != "" {
 		params["cwd"] = c.b.cfg.Cwd
 	}
@@ -319,11 +323,22 @@ func (c *conv) downloadFiles(ctx context.Context, p mm.Post) string {
 func (c *conv) sessionRan() {
 	c.mu.Lock()
 	c.attached = false
-	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode}
+	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode, Model: c.model}
 	c.mu.Unlock()
 	if st.CliSessionID != "" {
 		c.b.state.put(c.key, st)
 	}
+}
+
+// persistSettings saves mode and model. The session id is only ever written by
+// sessionRan, because a session that has not completed a turn cannot be resumed.
+func (c *conv) persistSettings() {
+	c.mu.Lock()
+	mode, model := c.mode, c.model
+	c.mu.Unlock()
+	st, _ := c.b.state.get(c.key)
+	st.ChannelID, st.Mode, st.Model = c.channelID, mode, model
+	c.b.state.put(c.key, st)
 }
 
 // resumeFailed handles a turn error on a freshly attached session: the saved
