@@ -17,6 +17,7 @@ const helpText = `**Commands**
 - ` + "`!status`" + ` - thread, permission mode, running turns
 - ` + "`!new`" + ` - start a fresh context (the old one keeps running until it finishes)
 - ` + "`!cancel`" + ` - interrupt the running work and drop queued messages
+- ` + "`!reset`" + ` - reconnect the agent if a turn is stuck; keeps the conversation and its context
 - ` + "`!model [name|default]`" + ` - list models, or switch this conversation's model (a partial name is fine)
 - ` + "`!allow [always]`" + ` / ` + "`!deny [reason]`" + ` - answer a permission prompt (the oldest waiting one); ` + "`always`" + ` also trusts that tool in this conversation
 - ` + "`!trust [tool...|all|off [tool...]]`" + ` - show, extend or revoke the tools this conversation runs without asking
@@ -65,6 +66,8 @@ func (c *conv) command(in inbound) bool {
 		c.reply("Started a fresh context.")
 	case "cancel":
 		c.cancel()
+	case "reset":
+		c.reset()
 	case "mode":
 		c.setMode(args)
 	case "model":
@@ -112,25 +115,72 @@ func (c *conv) cancel() {
 		c.reply("Nothing is running.")
 		return
 	}
+	// One interrupt ends the running turn; queued messages then start their own
+	// turns, so keep interrupting until the server reports none left.
 	for i := 0; i < n; i++ {
+		c.mu.Lock()
+		before := c.active
+		c.mu.Unlock()
+		if before == 0 {
+			return
+		}
 		if err := c.interrupt(tid); err != nil {
-			if !appclient.IsCode(err, appclient.ErrNoActiveTurn) {
+			if appclient.IsCode(err, appclient.ErrNoActiveTurn) {
+				// The server has no turn, so our count is stale: correct it.
+				c.forgetTurns()
+				c.reply("Nothing was running on the server; cleared the stale state.")
+			} else {
 				c.reply("**Error:** " + err.Error())
 			}
 			return
 		}
-		// Wait until the server reports this turn finished before the next interrupt.
-		want := n - i - 1
-		for w := 0; w < 25; w++ {
+		// Wait for the server to report a turn ended.
+		wait := c.b.cfg.CancelWait
+		if wait <= 0 {
+			wait = 5 * time.Second
+		}
+		for deadline := time.Now().Add(wait); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 			c.mu.Lock()
 			left := c.active
 			c.mu.Unlock()
-			if left <= want {
+			if left < before {
 				break
 			}
-			time.Sleep(200 * time.Millisecond)
 		}
 	}
+	c.mu.Lock()
+	left := c.active
+	c.mu.Unlock()
+	if left > 0 {
+		c.reply("The interrupt was accepted but the agent did not end its turn. `!reset` reconnects the agent and keeps this conversation's context.")
+	}
+}
+
+// forgetTurns drops the running-turn count and the typing indicator.
+func (c *conv) forgetTurns() {
+	c.mu.Lock()
+	c.active = 0
+	stop := c.stopTyping
+	c.stopTyping = nil
+	c.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+// reset reconnects the agent process without losing the conversation: the server
+// thread is closed and the next message re-attaches to the same CLI session.
+func (c *conv) reset() {
+	c.mu.Lock()
+	tid := c.threadID
+	c.mu.Unlock()
+	if tid != "" {
+		go c.closeThread(tid)
+		c.dropThread(tid)
+	}
+	c.forgetTurns()
+	c.dropPrompts("_Dropped by !reset:_")
+	c.reply("Reconnected. The conversation and its context are kept; your next message continues it.")
 }
 
 func (c *conv) setMode(args []string) {

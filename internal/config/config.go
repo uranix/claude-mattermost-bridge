@@ -25,6 +25,7 @@ type Config struct {
 
 	AttachDir         string
 	StateFile         string        // conversation -> CLI session map; "" disables persistence
+	CancelWait        time.Duration // how long !cancel waits for a turn to end after an interrupt; 0 means 5s
 	IdleClose         time.Duration // close a conversation's server thread after this much inactivity; 0 disables
 	PermissionPrompts bool          // ask in chat before tools that need permission run
 	SendFiles         bool          // upload files the agent references in its replies

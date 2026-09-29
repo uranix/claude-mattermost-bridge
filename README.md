@@ -118,6 +118,7 @@ Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
 | `!status` | thread id, permission mode, running turns |
 | `!new` | fresh context (also `!clear`); closes the old thread on the server |
 | `!cancel` | interrupt running work and queued messages |
+| `!reset` | reconnect the agent when a turn is stuck; keeps the conversation and its context (unlike `!new`) |
 | `!model [name]` | list the server's models, or switch this conversation's model (partial names work; `default` resets) |
 | `!allow [always]`, `!deny [reason]` | answer the oldest permission prompt; `always` trusts the tool in this conversation |
 | `!trust [tool...\|all\|off]` | show or change the tools this conversation runs without asking |
