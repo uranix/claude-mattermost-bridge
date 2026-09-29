@@ -18,6 +18,9 @@ import (
 	"github.com/uranix/claude-mattermost-bridge/internal/mm"
 )
 
+// reactionDelay is a var so tests can shorten it.
+var reactionDelay = time.Second
+
 type inbound struct {
 	post   mm.Post
 	text   string
@@ -122,8 +125,11 @@ func (c *conv) handle(in inbound) {
 		c.reply("**Error:** " + err.Error())
 		return
 	}
-	// Acknowledge that the message reached the app server.
+	// Acknowledge that the message reached the app server. The short delay lets
+	// clients replace their pending copy of the post first; a reaction that
+	// arrives earlier can be dropped by the desktop client.
 	go func() {
+		time.Sleep(reactionDelay)
 		rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer rcancel()
 		if err := c.b.mm.AddReaction(rctx, c.b.me.ID, in.post.ID, "eyes"); err != nil {
