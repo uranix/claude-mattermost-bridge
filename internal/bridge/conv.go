@@ -19,7 +19,7 @@ import (
 )
 
 // reactionDelay is a var so tests can shorten it.
-var reactionDelay = time.Second
+var reactionDelay = 300 * time.Millisecond
 
 type inbound struct {
 	post   mm.Post
