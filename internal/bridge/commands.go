@@ -18,7 +18,8 @@ const helpText = `**Commands**
 - ` + "`!new`" + ` - start a fresh context (the old one keeps running until it finishes)
 - ` + "`!cancel`" + ` - interrupt the running work and drop queued messages
 - ` + "`!model [name|default]`" + ` - list models, or switch this conversation's model (a partial name is fine)
-- ` + "`!allow [always]`" + ` / ` + "`!deny [reason]`" + ` - answer a permission prompt (the oldest waiting one)
+- ` + "`!allow [always]`" + ` / ` + "`!deny [reason]`" + ` - answer a permission prompt (the oldest waiting one); ` + "`always`" + ` also trusts that tool in this conversation
+- ` + "`!trust [tool...|all|off [tool...]]`" + ` - show, extend or revoke the tools this conversation runs without asking
 - ` + "`!mode [default|plan|acceptEdits|dontAsk|bypassPermissions]`" + ` - show or change the permission mode
 
 Messages sent while the agent is working are queued as the next turn.`
@@ -47,7 +48,7 @@ func (c *conv) command(in inbound) bool {
 		if cwd == "" {
 			cwd = "(server default)"
 		}
-		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nModel: `%s`\nRunning turns: %d\nWaiting for approval: %d\nWorking directory: `%s`", tid, mode, model, active, waiting, cwd))
+		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nModel: `%s`\nRunning turns: %d\nWaiting for approval: %d\nTrusted tools: %s\nWorking directory: `%s`", tid, mode, model, active, waiting, trustSummary(c.trustList()), cwd))
 	case "new", "clear":
 		c.mu.Lock()
 		tid := c.threadID
@@ -68,6 +69,8 @@ func (c *conv) command(in inbound) bool {
 		c.setMode(args)
 	case "model":
 		c.modelCommand(args)
+	case "trust":
+		c.trustCommand(args)
 	case "allow":
 		c.answerOldest("allow", len(args) > 0 && strings.EqualFold(args[0], "always"), "", in.user)
 	case "deny":
@@ -164,4 +167,69 @@ func (c *conv) setMode(args []string) {
 	c.mu.Unlock()
 	c.persistSettings()
 	c.reply("Permission mode: `" + res.Mode + "`")
+}
+
+// knownTools maps lowercase names to the CLI's tool names, so "!trust bash" works.
+var knownTools = map[string]string{
+	"bash": "Bash", "edit": "Edit", "write": "Write", "multiedit": "MultiEdit", "notebookedit": "NotebookEdit",
+	"read": "Read", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Task",
+}
+
+func canonicalTool(name string) string {
+	if k, ok := knownTools[strings.ToLower(name)]; ok {
+		return k
+	}
+	return name
+}
+
+func trustSummary(keys []string) string {
+	if len(keys) == 0 {
+		return "none"
+	}
+	out := make([]string, len(keys))
+	for i, k := range keys {
+		switch k {
+		case trustAll:
+			out[i] = "everything"
+		case "Edit":
+			out[i] = "`Edit/Write`"
+		default:
+			out[i] = "`" + k + "`"
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// trustCommand shows or changes the tools this conversation runs without asking.
+func (c *conv) trustCommand(args []string) {
+	switch {
+	case len(args) == 0:
+		if keys := c.trustList(); len(keys) == 0 {
+			c.reply("Nothing is trusted: every tool call that needs permission asks first.\n" +
+				"`!trust Bash` or `!trust Edit` skips the questions for that tool in this conversation; `!trust all` for everything.")
+		} else {
+			c.reply("Run without asking in this conversation: " + trustSummary(keys) + ". `!trust off [tool]` revokes.")
+		}
+	case strings.EqualFold(args[0], "off"):
+		c.mu.Lock()
+		if len(args) == 1 {
+			c.trusted = map[string]bool{}
+		} else {
+			for _, a := range args[1:] {
+				delete(c.trusted, trustKey(canonicalTool(a)))
+			}
+		}
+		c.mu.Unlock()
+		c.persistSettings()
+		c.reply("Trusted now: " + trustSummary(c.trustList()) + ".")
+	default:
+		for _, a := range args {
+			if strings.EqualFold(a, "all") || a == trustAll {
+				c.trust(trustAll)
+			} else {
+				c.trust(trustKey(canonicalTool(a)))
+			}
+		}
+		c.reply("Run without asking in this conversation: " + trustSummary(c.trustList()) + ". `!trust off` revokes.")
+	}
 }

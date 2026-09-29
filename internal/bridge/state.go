@@ -6,16 +6,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 )
 
 // convState is what survives a restart of the bridge or the app server:
 // enough to re-attach the conversation to its Claude CLI session.
 type convState struct {
-	ChannelID    string `json:"channel_id"`
-	CliSessionID string `json:"cli_session_id"`
-	Mode         string `json:"mode,omitempty"`
-	Model        string `json:"model,omitempty"` // "" = default
+	ChannelID    string   `json:"channel_id"`
+	CliSessionID string   `json:"cli_session_id"`
+	Mode         string   `json:"mode,omitempty"`
+	Model        string   `json:"model,omitempty"`   // "" = default
+	Trusted      []string `json:"trusted,omitempty"` // tools run without asking
 }
 
 // store is a small JSON file keyed by conversation key. A path of "" keeps
@@ -54,7 +56,7 @@ func (s *store) get(key string) (convState, bool) {
 func (s *store) put(key string, v convState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.data[key] == v {
+	if old, ok := s.data[key]; ok && reflect.DeepEqual(old, v) {
 		return
 	}
 	s.data[key] = v

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,7 +31,8 @@ type prompt struct {
 	requestID string
 	threadID  string
 	postID    string
-	body      string // the post without its instructions; outcomes are appended to it
+	summary   string // one line naming the tool call; what the post collapses to
+	tool      string
 }
 
 type approvalRequest struct {
@@ -111,68 +113,80 @@ func describeTool(tool string, raw json.RawMessage, desc string) string {
 	return sb.String()
 }
 
-// summarizeSuggestions turns the CLI's suggested permission updates into short
-// phrases. Rules saved to settings files are called out because they persist.
-func summarizeSuggestions(raw json.RawMessage) []string {
-	var sugg []struct {
-		Type        string   `json:"type"`
-		Mode        string   `json:"mode"`
-		Destination string   `json:"destination"`
-		Directories []string `json:"directories"`
-		Rules       []struct {
-			ToolName    string `json:"toolName"`
-			RuleContent string `json:"ruleContent"`
-		} `json:"rules"`
+// summary is the one-line form a prompt collapses to once it is decided.
+func (a approvalRequest) summary() string {
+	s := "`" + a.ToolName + "`"
+	if h := summarizeInput(a.Input); h != "" {
+		s += " " + h
 	}
-	if json.Unmarshal(raw, &sugg) != nil {
-		return nil
-	}
-	var out []string
-	for _, s := range sugg {
-		switch s.Type {
-		case "setMode":
-			if s.Mode == "acceptEdits" {
-				out = append(out, "accept file edits without asking")
-			} else {
-				out = append(out, "switch to "+s.Mode+" mode")
-			}
-		case "addRules":
-			for _, r := range s.Rules {
-				rule := r.ToolName
-				if r.RuleContent != "" {
-					rule += "(" + clip(r.RuleContent, 60, 1) + ")"
-				}
-				txt := "always allow `" + strings.ReplaceAll(rule, "`", "'") + "`"
-				if s.Destination != "" && s.Destination != "session" {
-					txt += " (saved to " + s.Destination + ")"
-				}
-				out = append(out, txt)
-			}
-		case "addDirectories":
-			out = append(out, fmt.Sprintf("allow access to %d more director(y/ies)", len(s.Directories)))
-		}
-	}
-	return out
+	return s
 }
 
-func (a approvalRequest) messages() (body, legend string, withAlways bool) {
+func (a approvalRequest) messages() (body, legend string) {
 	body = "**Permission requested:** `" + a.ToolName + "`"
 	if d := describeTool(a.ToolName, a.Input, a.Description); d != "" {
 		body += "\n" + d
 	}
-	sugg := summarizeSuggestions(a.Suggestions)
-	legend = fmt.Sprintf("React :%s: to allow, :%s: to deny", emojiAllow, emojiDeny)
-	if len(sugg) > 0 {
-		legend += fmt.Sprintf(", :%s: to allow and %s", emojiAlways, strings.Join(sugg, " and "))
-		withAlways = true
-	}
-	legend += ". Or reply `!allow`, `!allow always`, `!deny [reason]`."
+	legend = fmt.Sprintf(":%s: allow, :%s: deny, :%s: allow every `%s` call in this conversation. Or `!allow`, `!allow always`, `!deny [reason]`.",
+		emojiAllow, emojiDeny, emojiAlways, trustName(a.ToolName))
 	if a.ExpiresAt > 0 {
 		if left := time.Until(time.UnixMilli(a.ExpiresAt)); left > 0 {
 			legend += fmt.Sprintf(" Denied automatically in %d min.", int(left.Minutes())+1)
 		}
 	}
-	return body, legend, withAlways
+	return body, legend
+}
+
+// ---- trust: tools a conversation has agreed to run without asking -----------
+
+const trustAll = "*"
+
+// editTools are treated as one family: trusting one file-editing tool and being
+// asked again for its siblings would defeat the purpose.
+var editTools = map[string]bool{"Write": true, "Edit": true, "MultiEdit": true, "NotebookEdit": true}
+
+// trustKey maps a tool to what is trusted on its behalf.
+func trustKey(tool string) string {
+	if editTools[tool] {
+		return "Edit"
+	}
+	return tool
+}
+
+// trustName is how a trust key is shown to the user.
+func trustName(tool string) string {
+	if editTools[tool] {
+		return "Edit/Write"
+	}
+	return tool
+}
+
+func (c *conv) trusts(tool string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.trusted[trustAll] || c.trusted[trustKey(tool)]
+}
+
+// trust adds a tool (or trustAll) to the conversation's trust list and saves it.
+func (c *conv) trust(key string) {
+	c.mu.Lock()
+	if c.trusted == nil {
+		c.trusted = map[string]bool{}
+	}
+	c.trusted[key] = true
+	c.mu.Unlock()
+	c.persistSettings()
+}
+
+func (c *conv) trustList() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []string
+	for k := range c.trusted {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ---- lifecycle -------------------------------------------------------------
@@ -184,7 +198,7 @@ func (c *conv) askPermission(a approvalRequest) {
 }
 
 func (c *conv) deliverPrompt(root string, a approvalRequest) {
-	body, legend, withAlways := a.messages()
+	body, legend := a.messages()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -195,7 +209,7 @@ func (c *conv) deliverPrompt(root string, a approvalRequest) {
 		c.b.answerPermission(a.ThreadID, a.RequestID, "deny", false, "The permission prompt could not be shown to the user.")
 		return
 	}
-	p := &prompt{conv: c, requestID: a.RequestID, threadID: a.ThreadID, postID: post.ID, body: body}
+	p := &prompt{conv: c, requestID: a.RequestID, threadID: a.ThreadID, postID: post.ID, summary: a.summary(), tool: a.ToolName}
 	c.b.mu.Lock()
 	c.b.byPost[post.ID] = p
 	c.b.mu.Unlock()
@@ -203,11 +217,7 @@ func (c *conv) deliverPrompt(root string, a approvalRequest) {
 	c.prompts = append(c.prompts, p)
 	c.mu.Unlock()
 
-	emojis := []string{emojiAllow, emojiDeny}
-	if withAlways {
-		emojis = append(emojis, emojiAlways)
-	}
-	for _, e := range emojis {
+	for _, e := range []string{emojiAllow, emojiDeny, emojiAlways} {
 		if err := c.b.mm.AddReaction(ctx, c.b.me.ID, post.ID, e); err != nil {
 			slog.Warn("could not add reaction", "emoji", e, "err", err)
 		}
@@ -248,33 +258,36 @@ func (b *Bridge) takePrompt(p *prompt) bool {
 	return true
 }
 
+// patchPrompt collapses the prompt to one line: the outcome and what it was about.
 func (b *Bridge) patchPrompt(p *prompt, outcome string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := b.mm.PatchPost(ctx, p.postID, p.body+"\n\n"+outcome); err != nil {
+	if err := b.mm.PatchPost(ctx, p.postID, outcome+" "+p.summary); err != nil {
 		slog.Warn("could not update the permission prompt", "err", err)
 	}
 }
 
 // resolvePrompt sends the user's decision to the server and records it on the post.
-func (b *Bridge) resolvePrompt(p *prompt, behavior string, apply bool, message, by string) {
+// With always, the tool is also trusted for the rest of the conversation.
+func (b *Bridge) resolvePrompt(p *prompt, behavior string, always bool, message, by string) {
 	if !b.takePrompt(p) {
 		return // already answered, expired or cancelled
 	}
-	if err := b.answerPermission(p.threadID, p.requestID, behavior, apply, message); err != nil {
-		b.patchPrompt(p, "_Could not send the answer: "+err.Error()+"_")
+	if err := b.answerPermission(p.threadID, p.requestID, behavior, false, message); err != nil {
+		b.patchPrompt(p, "_Could not send the answer ("+err.Error()+"):_")
 		return
 	}
 	var outcome string
 	switch {
 	case behavior == "deny" && message != "":
-		outcome = fmt.Sprintf("**Denied** by @%s: %s", by, message)
+		outcome = fmt.Sprintf("**Denied** by @%s (%s):", by, message)
 	case behavior == "deny":
-		outcome = "**Denied** by @" + by
-	case apply:
-		outcome = "**Allowed** by @" + by + " (and applied the suggested rule)"
+		outcome = "**Denied** by @" + by + ":"
+	case always:
+		p.conv.trust(trustKey(p.tool))
+		outcome = fmt.Sprintf("**Allowed** by @%s, and every later `%s` call in this conversation (`!trust off` to revoke):", by, trustName(p.tool))
 	default:
-		outcome = "**Allowed** by @" + by
+		outcome = "**Allowed** by @" + by + ":"
 	}
 	b.patchPrompt(p, outcome)
 }
@@ -286,9 +299,9 @@ func (b *Bridge) expirePrompt(p *prompt, reason string) {
 	}
 	switch reason {
 	case "timeout":
-		b.patchPrompt(p, "_No answer in time: denied automatically._")
+		b.patchPrompt(p, "_No answer in time, denied automatically:_")
 	default:
-		b.patchPrompt(p, "_Cancelled._")
+		b.patchPrompt(p, "_Cancelled:_")
 	}
 }
 

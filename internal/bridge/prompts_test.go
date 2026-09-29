@@ -106,19 +106,19 @@ func startPermBridge(t *testing.T, prompts bool) *permEnv {
 
 func (e *permEnv) sawCall(t *testing.T, contains string) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.After(5 * time.Second)
 	var seen []string
-	for time.Now().Before(deadline) {
-		for _, c := range drain(e.calls) {
+	for {
+		select {
+		case c := <-e.calls: // one at a time, so calls after the match stay queued
 			seen = append(seen, c)
 			if strings.Contains(c, contains) {
 				return c
 			}
+		case <-deadline:
+			t.Fatalf("no call containing %q; saw %q", contains, seen)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("no call containing %q; saw %q", contains, seen)
-	return ""
 }
 
 func (e *permEnv) reactionsOn(postID string) []string {
@@ -140,7 +140,7 @@ func TestPermissionPromptShownAndAllowedByReaction(t *testing.T) {
 	prompt := e.fm.waitPost(t, "Permission requested")
 	msg := prompt["message"].(string)
 	for _, want := range []string{"`Bash`", "ls -la /tmp", "List the directory", "```", ":white_check_mark:", ":x:", ":fast_forward:",
-		"accept file edits without asking", "always allow `Bash(ls -la /tmp)` (saved to localSettings)", "!allow", "Denied automatically"} {
+		"allow every `Bash` call in this conversation", "!allow", "Denied automatically"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("prompt lacks %q:\n%s", want, msg)
 		}
@@ -162,19 +162,64 @@ func TestPermissionPromptShownAndAllowedByReaction(t *testing.T) {
 	if !strings.Contains(call, `"behavior":"allow"`) || strings.Contains(call, "apply_suggestions") || !strings.Contains(call, `"request_id":"req1"`) {
 		t.Fatalf("bad answer: %s", call)
 	}
-	e.fm.waitPatch(t, id, "**Allowed** by @Alice")
+	patched := e.fm.waitPatch(t, id, "**Allowed** by @Alice")
+	// Once decided, the prompt collapses to one line instead of staying a wall of text.
+	if strings.Contains(patched, "```") || strings.Contains(patched, "React") || strings.Count(patched, "\n") > 0 || !strings.Contains(patched, "`Bash` `ls -la /tmp`") {
+		t.Errorf("a decided prompt should collapse to a single line naming the call:\n%s", patched)
+	}
 	e.fm.waitPost(t, "ran it")
 }
 
-func TestPermissionAlwaysReactionAppliesSuggestions(t *testing.T) {
+func TestPermissionAlwaysReactionTrustsTheTool(t *testing.T) {
 	e := startPermBridge(t, true)
 	e.fm.say("D", "dmchan", "p1", "", "list /tmp")
 	id := e.fm.waitPost(t, "Permission requested")["id"].(string)
 	e.fm.react("alice", id, "fast_forward")
-	if call := e.sawCall(t, "permission/respond"); !strings.Contains(call, `"apply_suggestions":true`) {
-		t.Fatalf("suggestions should be applied: %s", call)
+	call := e.sawCall(t, "permission/respond")
+	if !strings.Contains(call, `"behavior":"allow"`) || strings.Contains(call, "apply_suggestions") {
+		t.Fatalf("trusting a tool is the bridge's business; the CLI's own rules must not be applied: %s", call)
 	}
-	e.fm.waitPatch(t, id, "applied the suggested rule")
+	e.fm.waitPatch(t, id, "every later `Bash` call in this conversation")
+	e.fm.waitPost(t, "ran it")
+
+	// The next request for the same tool is answered without any post.
+	promptsBefore := countPrompts(e.fm)
+	e.fm.say("D", "dmchan", "p2", "", "and again")
+	e.sawCall(t, "turn/start")
+	call = e.sawCall(t, "permission/respond")
+	if !strings.Contains(call, `"behavior":"allow"`) {
+		t.Fatalf("trusted request must be allowed: %s", call)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := countPrompts(e.fm); n != promptsBefore {
+		t.Fatalf("a trusted tool must not produce a prompt post (had %d, now %d)", promptsBefore, n)
+	}
+
+	// !trust shows it, !trust off revokes it, and prompts come back.
+	e.fm.say("D", "dmchan", "p3", "", "!trust")
+	e.fm.waitPost(t, "Run without asking in this conversation: `Bash`")
+	e.fm.say("D", "dmchan", "p4", "", "!trust off")
+	e.fm.waitPost(t, "Trusted now: none")
+	e.fm.say("D", "dmchan", "p5", "", "once more")
+	deadline := time.Now().Add(5 * time.Second)
+	for countPrompts(e.fm) == promptsBefore && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if countPrompts(e.fm) == promptsBefore {
+		t.Fatal("after !trust off the tool must ask again")
+	}
+}
+
+func countPrompts(f *fakeMM) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, p := range f.posts {
+		if strings.Contains(p["message"].(string), "Permission requested") {
+			n++
+		}
+	}
+	return n
 }
 
 func TestPermissionDenyByReaction(t *testing.T) {
@@ -220,7 +265,7 @@ func TestPermissionAnsweredByCommands(t *testing.T) {
 	if !strings.Contains(call, `"behavior":"deny"`) || !strings.Contains(call, `"message":"too risky"`) {
 		t.Fatalf("bad deny: %s", call)
 	}
-	e.fm.waitPatch(t, id, "**Denied** by @Alice: too risky")
+	e.fm.waitPatch(t, id, "**Denied** by @Alice (too risky):")
 
 	e.fm.say("D", "dmchan", "p4", "", "!allow")
 	e.fm.waitPost(t, "Nothing is waiting for approval")
@@ -229,10 +274,64 @@ func TestPermissionAnsweredByCommands(t *testing.T) {
 func TestPermissionAllowAlwaysCommand(t *testing.T) {
 	e := startPermBridge(t, true)
 	e.fm.say("D", "dmchan", "p1", "", "list /tmp")
-	e.fm.waitPost(t, "Permission requested")
+	id := e.fm.waitPost(t, "Permission requested")["id"].(string)
 	e.fm.say("D", "dmchan", "p2", "", "!allow always")
-	if call := e.sawCall(t, "permission/respond"); !strings.Contains(call, `"apply_suggestions":true`) || !strings.Contains(call, `"behavior":"allow"`) {
+	if call := e.sawCall(t, "permission/respond"); !strings.Contains(call, `"behavior":"allow"`) || strings.Contains(call, "apply_suggestions") {
 		t.Fatalf("bad answer: %s", call)
+	}
+	e.fm.waitPatch(t, id, "every later `Bash` call")
+}
+
+func TestTrustCommandAndFamilies(t *testing.T) {
+	e := startPermBridge(t, true)
+	e.fm.say("D", "dmchan", "p1", "", "!trust")
+	e.fm.waitPost(t, "Nothing is trusted")
+
+	// Names are case-insensitive, and the file-editing tools are one family.
+	e.fm.say("D", "dmchan", "p2", "", "!trust bash write")
+	m := e.fm.waitPost(t, "Run without asking in this conversation")["message"].(string)
+	if !strings.Contains(m, "`Bash`") || !strings.Contains(m, "`Edit/Write`") {
+		t.Fatalf("unexpected trust list: %s", m)
+	}
+	e.fm.say("D", "dmchan", "p3", "", "!trust off write")
+	e.fm.waitPost(t, "Trusted now: `Bash`.")
+	e.fm.say("D", "dmchan", "p4", "", "!trust all")
+	e.fm.waitPost(t, "everything")
+	e.fm.say("D", "dmchan", "p5", "", "!status")
+	e.fm.waitPost(t, "Trusted tools: ")
+}
+
+func TestTrustSurvivesARestart(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakePermApp(t, calls)
+	cfg := &config.Config{
+		MattermostURL: "unused", Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "default", AttachDir: t.TempDir(), PermissionPrompts: true,
+		StateFile: t.TempDir() + "/state.json",
+	}
+
+	fm1, msrv1 := newFakeMM(t)
+	stop := startBridge(t, cfg, msrv1)
+	fm1.say("D", "dmchan", "p1", "", "!trust bash")
+	fm1.waitPost(t, "Run without asking")
+	stop()
+
+	fm2, msrv2 := newFakeMM(t)
+	stop = startBridge(t, cfg, msrv2)
+	defer stop()
+	fm2.say("D", "dmchan", "p2", "", "list /tmp")
+	deadline := time.Now().Add(5 * time.Second)
+	var got string
+	for time.Now().Before(deadline) && !strings.Contains(got, "permission/respond") {
+		got += strings.Join(drain(calls), "\n")
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(got, `permission/respond {"behavior":"allow"`) {
+		t.Fatalf("the saved trust should have answered without asking:\n%s", got)
+	}
+	if n := countPrompts(fm2); n != 0 {
+		t.Fatalf("no prompt expected after restart, saw %d", n)
 	}
 }
 
@@ -286,25 +385,5 @@ func TestDescribeTool(t *testing.T) {
 	other := describeTool("WebFetch", json.RawMessage(`{"url":"https://example.com"}`), "fetch a page")
 	if !strings.Contains(other, "example.com") || !strings.Contains(other, "fetch a page") {
 		t.Errorf("generic tools show their input:\n%s", other)
-	}
-}
-
-func TestSummarizeSuggestions(t *testing.T) {
-	got := summarizeSuggestions(json.RawMessage(`[
-	  {"type":"setMode","mode":"acceptEdits","destination":"session"},
-	  {"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"git status"}],"destination":"localSettings"},
-	  {"type":"addRules","rules":[{"toolName":"Read"}],"destination":"session"},
-	  {"type":"addDirectories","directories":["/a","/b"],"destination":"session"}]`))
-	want := []string{
-		"accept file edits without asking",
-		"always allow `Bash(git status)` (saved to localSettings)",
-		"always allow `Read`",
-		"allow access to 2 more director(y/ies)",
-	}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("got %q\nwant %q", got, want)
-	}
-	if summarizeSuggestions(nil) != nil || summarizeSuggestions(json.RawMessage(`nonsense`)) != nil {
-		t.Error("no suggestions must summarize to nothing")
 	}
 }

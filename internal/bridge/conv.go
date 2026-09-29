@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,12 +41,13 @@ type conv struct {
 	lastActive   time.Time
 	threadID     string
 	mode         string
-	model        string    // "" = server/CLI default
-	cliSessionID string    // Claude CLI session behind threadID; survives restarts via the state file
-	attached     bool      // threadID was attached to a saved session and has not completed a turn yet
-	prompts      []*prompt // permission prompts waiting for an answer, oldest first
-	active       int       // turns sent to the app server and not yet finished
-	rootID       string    // reply target of the latest inbound message
+	model        string          // "" = server/CLI default
+	cliSessionID string          // Claude CLI session behind threadID; survives restarts via the state file
+	attached     bool            // threadID was attached to a saved session and has not completed a turn yet
+	prompts      []*prompt       // permission prompts waiting for an answer, oldest first
+	trusted      map[string]bool // tools this conversation runs without asking (trustKey, or trustAll)
+	active       int             // turns sent to the app server and not yet finished
+	rootID       string          // reply target of the latest inbound message
 	stopTyping   context.CancelFunc
 }
 
@@ -358,7 +360,7 @@ func (c *conv) downloadFiles(ctx context.Context, p mm.Post) string {
 func (c *conv) sessionRan() {
 	c.mu.Lock()
 	c.attached = false
-	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode, Model: c.model}
+	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode, Model: c.model, Trusted: c.trustedLocked()}
 	c.mu.Unlock()
 	if st.CliSessionID != "" {
 		c.b.state.put(c.key, st)
@@ -369,10 +371,10 @@ func (c *conv) sessionRan() {
 // sessionRan, because a session that has not completed a turn cannot be resumed.
 func (c *conv) persistSettings() {
 	c.mu.Lock()
-	mode, model := c.mode, c.model
+	mode, model, trusted := c.mode, c.model, c.trustedLocked()
 	c.mu.Unlock()
 	st, _ := c.b.state.get(c.key)
-	st.ChannelID, st.Mode, st.Model = c.channelID, mode, model
+	st.ChannelID, st.Mode, st.Model, st.Trusted = c.channelID, mode, model, trusted
 	c.b.state.put(c.key, st)
 }
 
@@ -392,4 +394,14 @@ func (c *conv) resumeFailed() bool {
 	c.b.state.delete(c.key)
 	c.dropThread(tid)
 	return true
+}
+
+// trustedLocked returns the trust list sorted; the caller holds c.mu.
+func (c *conv) trustedLocked() []string {
+	var out []string
+	for k := range c.trusted {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

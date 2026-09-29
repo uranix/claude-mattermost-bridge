@@ -31,37 +31,52 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
 
 When Claude wants to run a tool that its permission mode does not pre-approve
 (for example a shell command in `default` or `acceptEdits` mode), the bridge asks
-in the chat instead of silently refusing. The prompt post shows what is about to
+in the chat instead of silently refusing. The prompt shows what is about to
 happen (the command, the file and a preview of its content, or an edit's old and
-new text) and offers three reactions that the bot adds itself, so each is one
-click away:
+new text) and the bot adds three reactions, so each answer is one click:
 
 | Reaction | Effect |
 |---|---|
 | :white_check_mark: | allow this call |
 | :x: | deny; Claude is told and reacts accordingly |
-| :fast_forward: | allow and apply the CLI's suggestion, e.g. "accept file edits without asking for this session". Shown only when there is a suggestion, and the post says exactly what it does. |
+| :fast_forward: | allow, and trust this tool for the rest of the conversation: later calls run without asking (see below) |
 
-Or reply with `!allow`, `!allow always` (same as :fast_forward:) or `!deny [reason]`,
-which answer the longest-waiting prompt. The post is edited to record who decided
-what. A prompt nobody answers is denied automatically after the app server's
+Or reply `!allow`, `!allow always` (same as :fast_forward:) or `!deny [reason]`,
+which answer the longest-waiting prompt. Once decided, the prompt collapses to one
+line ("Allowed by @x: `Bash` `ls -la`") so answered prompts do not clutter the chat.
+A prompt nobody answers is denied automatically after the app server's
 `--permission-timeout` (default 5 minutes), and the post says so. `!cancel`
 withdraws pending prompts.
 
+**Too many prompts?** Three ways to cut them, from narrow to broad:
+
+1. **Trust a tool.** :fast_forward: or `!trust Bash` makes this conversation run that
+   tool without asking. `Write`, `Edit`, `MultiEdit` and `NotebookEdit` are one family
+   (`!trust edit`). `!trust all` trusts everything, `!trust` shows the list and
+   `!trust off [tool]` revokes. The list is saved with the conversation, so it
+   survives restarts and `!new`. Trusted calls leave no post at all; set
+   `BRIDGE_SHOW_TOOLS=1` if you want a one-line note per tool call.
+2. **Auto mode.** `!mode auto` (or `CLAUDE_PERMISSION_MODE=auto`) lets the CLI decide:
+   it approves what it judges safe and only asks about the rest. In testing it ran a
+   multi-command task, including `rm -rf` inside the working directory and a
+   download, with no prompts, so it is fairly permissive. Only some models support it.
+3. **Prompts off.** `BRIDGE_PERMISSION_PROMPTS=0` restores the old behaviour: denied
+   tools are reported afterwards and `!mode` raises the mode.
+
+`CLAUDE_PERMISSION_MODE` decides what is asked at all: `default` asks for edits and
+commands, `acceptEdits` only for commands, `auto` rarely, `bypassPermissions` never.
+
 - Only usernames in `MM_ALLOWED_USERS` count; reactions from anyone else, and the
-  bot's own, are ignored. In a shared channel thread any allowed user can answer.
-- A suggestion can be a **persistent** rule: for Bash it may be written to the
-  project's `.claude/settings.local.json`. The prompt says so ("saved to
-  localSettings"); use :white_check_mark: when you only mean this one call.
+  bot's own, are ignored. In a shared channel thread any allowed user can answer
+  prompts and change the trust list, and trust applies to everyone in that thread.
+- `!trust all` and `!trust Bash` are bridge-side and need no server flag, unlike
+  `bypassPermissions`. They are as strong as clicking :white_check_mark: every time.
 - Why reactions and not buttons: Mattermost buttons make the *Mattermost server*
   call a URL, so the bridge would need to be reachable from it, and Mattermost
   blocks calls to private addresses by default. Reactions arrive on the WebSocket
   the bridge already has open.
-- `BRIDGE_PERMISSION_PROMPTS=0` restores the old behaviour: denied tools are
-  reported afterwards and `!mode` raises the mode. `CLAUDE_PERMISSION_MODE`
-  decides what gets asked at all: `default` asks for edits and commands,
-  `acceptEdits` only for commands, `bypassPermissions` never asks.
-- Needs an app server with `permission/respond` (opt-in via `permission_prompts`).
+- Needs an app server with `permission/respond` (opt-in via `permission_prompts`);
+  `auto` needs one that accepts that mode.
 
 ## Files and images from Claude
 
@@ -104,7 +119,8 @@ Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
 | `!new` | fresh context (also `!clear`); closes the old thread on the server |
 | `!cancel` | interrupt running work and queued messages |
 | `!model [name]` | list the server's models, or switch this conversation's model (partial names work; `default` resets) |
-| `!allow [always]`, `!deny [reason]` | answer the oldest permission prompt |
+| `!allow [always]`, `!deny [reason]` | answer the oldest permission prompt; `always` trusts the tool in this conversation |
+| `!trust [tool...\|all\|off]` | show or change the tools this conversation runs without asking |
 | `!mode [m]` | show / change permission mode via `approval/respond` |
 
 The model list comes from the Claude CLI through the server's `model/list`, so it

@@ -121,10 +121,13 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 	defer b.mu.Unlock()
 	c, ok := b.convs[key]
 	if !ok {
-		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, model: b.cfg.Model, inbox: make(chan inbound, 64), out: make(chan func(), 256)}
+		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, model: b.cfg.Model, trusted: map[string]bool{}, inbox: make(chan inbound, 64), out: make(chan func(), 256)}
 		if st, ok := b.state.get(key); ok {
 			c.cliSessionID = st.CliSessionID
 			c.model = st.Model // "" means the user chose the default
+			for _, k := range st.Trusted {
+				c.trusted[k] = true
+			}
 			if st.Mode != "" {
 				c.mode = st.Mode
 			}
@@ -253,9 +256,17 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		c.reply("**Error:** " + p.Error)
 	case "approval/requested":
 		var a approvalRequest
-		if json.Unmarshal(n.Params, &a) == nil {
-			c.askPermission(a)
+		if json.Unmarshal(n.Params, &a) != nil {
+			return
 		}
+		if c.trusts(a.ToolName) {
+			// The user already agreed to this tool in this conversation: no post at all.
+			if err := b.answerPermission(a.ThreadID, a.RequestID, "allow", false, ""); err != nil {
+				slog.Warn("auto-allow failed", "tool", a.ToolName, "err", err)
+			}
+			return
+		}
+		c.askPermission(a)
 	case "approval/cancelled":
 		if pr := c.findPrompt(p.RequestID); pr != nil {
 			b.expirePrompt(pr, p.Reason)
