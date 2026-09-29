@@ -32,7 +32,7 @@ Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
 |---|---|
 | `!help` | list commands |
 | `!status` | thread id, permission mode, running turns |
-| `!new` | fresh context (also `!clear`) |
+| `!new` | fresh context (also `!clear`); closes the old thread on the server |
 | `!cancel` | interrupt running work and queued messages |
 | `!mode [m]` | show / change permission mode via `approval/respond` |
 
@@ -65,6 +65,8 @@ Unknown `!words` are sent to Claude as ordinary text.
   aborted. `CLAUDE_CWD` must not change, since the CLI stores sessions per
   directory; if a saved session cannot be resumed the bridge starts fresh and
   asks the user to resend.
+- Channel-thread conversations are not closed automatically, so they keep a
+  thread slot on the server (default limit 64 per connection) until `!new`.
 - **No live permission prompts.** The server has no `can_use_tool` routing yet;
   denied tools are reported (`turn/permission_denied`) and the user can raise the
   mode with `!mode`. Default mode is `acceptEdits`.

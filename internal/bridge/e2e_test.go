@@ -249,6 +249,15 @@ func TestResumeAfterRestart(t *testing.T) {
 	// !new forgets the session.
 	fm2.say("D", "dmchan", "p3", "", "!new")
 	fm2.waitPost(t, "fresh context")
+	deadline := time.Now().Add(3 * time.Second)
+	var closed bool
+	for !closed && time.Now().Before(deadline) {
+		closed = strings.Contains(strings.Join(drain(calls), "\n"), `thread/close {"thread_id":"T1"}`)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !closed {
+		t.Fatal("!new should close the old thread on the server")
+	}
 	if b, _ := os.ReadFile(cfg.StateFile); strings.Contains(string(b), "S1") {
 		t.Fatalf("!new should delete the saved session: %s", b)
 	}

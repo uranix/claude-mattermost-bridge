@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ func (c *conv) command(in inbound) bool {
 		c.mu.Unlock()
 		c.b.state.delete(c.key)
 		if tid != "" {
-			go c.interrupt(tid)
+			go c.closeThread(tid)
 			c.dropThread(tid)
 		}
 		c.turnDone()
@@ -64,6 +65,21 @@ func (c *conv) command(in inbound) bool {
 		return false
 	}
 	return true
+}
+
+// closeThread frees the thread's slot on the server. Servers without
+// thread/close only get an interrupt, so the abandoned turn stops anyway.
+func (c *conv) closeThread(tid string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := c.b.app.Call(ctx, "thread/close", map[string]any{"thread_id": tid}, nil)
+	switch {
+	case err == nil, appclient.IsCode(err, appclient.ErrThreadNotFound):
+	case appclient.IsCode(err, appclient.ErrMethodNotFound):
+		_ = c.interrupt(tid)
+	default:
+		slog.Warn("thread/close failed", "thread", tid, "err", err)
+	}
 }
 
 func (c *conv) interrupt(tid string) error {
