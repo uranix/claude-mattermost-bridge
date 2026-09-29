@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,8 +19,20 @@ import (
 	"github.com/uranix/claude-mattermost-bridge/internal/mm"
 )
 
-// reactionDelay is a var so tests can shorten it.
+// reactionDelay is a var so tests can shorten it. The delay lets clients
+// replace their pending copy of a post before the reaction arrives; the
+// desktop client can drop a reaction that comes too early.
 var reactionDelay = 300 * time.Millisecond
+
+// newMessageID returns a random UUIDv4, which the app server passes to the CLI
+// to learn when the message is consumed.
+func newMessageID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
 
 type inbound struct {
 	post   mm.Post
@@ -44,13 +57,14 @@ type conv struct {
 	lastActive   time.Time
 	threadID     string
 	mode         string
-	model        string          // "" = server/CLI default
-	cliSessionID string          // Claude CLI session behind threadID; survives restarts via the state file
-	attached     bool            // threadID was attached to a saved session and has not completed a turn yet
-	prompts      []*prompt       // permission prompts waiting for an answer, oldest first
-	trusted      map[string]bool // tools this conversation runs without asking (trustKey, or trustAll)
-	active       int             // turns sent to the app server and not yet finished
-	rootID       string          // reply target of the latest inbound message
+	model        string            // "" = server/CLI default
+	cliSessionID string            // Claude CLI session behind threadID; survives restarts via the state file
+	attached     bool              // threadID was attached to a saved session and has not completed a turn yet
+	awaiting     map[string]string // message_id -> post ID, sent to the agent and not yet consumed
+	prompts      []*prompt         // permission prompts waiting for an answer, oldest first
+	trusted      map[string]bool   // tools this conversation runs without asking (trustKey, or trustAll)
+	active       int               // turns sent to the app server and not yet finished
+	rootID       string            // reply target of the latest inbound message
 	stopTyping   context.CancelFunc
 }
 
@@ -120,26 +134,33 @@ func (c *conv) handle(in inbound) {
 		prompt = "@" + in.user + ": " + prompt // several people can share a channel thread
 	}
 
-	if err := c.send(ctx, prompt); err != nil {
+	if err := c.send(ctx, prompt, in.post.ID); err != nil {
 		slog.Error("send failed", "conv", c.key, "err", err)
 		c.reply("**Error:** " + err.Error())
 		return
 	}
-	// Acknowledge that the message reached the app server. The short delay lets
-	// clients replace their pending copy of the post first; a reaction that
-	// arrives earlier can be dropped by the desktop client.
-	go func() {
-		time.Sleep(reactionDelay)
-		rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer rcancel()
-		if err := c.b.mm.AddReaction(rctx, c.b.me.ID, in.post.ID, "eyes"); err != nil {
-			slog.Warn("could not add eyes reaction", "err", err)
-		}
-	}()
 }
 
-// send starts a turn, or steers the running one when the agent is busy.
-func (c *conv) send(ctx context.Context, prompt string) error {
+// send starts a turn, or steers the running one when the agent is busy. The
+// post gets an :eyes: reaction once the agent actually consumes the message
+// (see messageConsumed), which for a steered message can be well after this returns.
+func (c *conv) send(ctx context.Context, prompt, postID string) error {
+	msgID := newMessageID()
+	c.mu.Lock()
+	if c.awaiting == nil {
+		c.awaiting = map[string]string{}
+	}
+	c.awaiting[msgID] = postID // before the call, so a fast notification cannot be missed
+	c.mu.Unlock()
+	ok := false
+	defer func() {
+		if !ok {
+			c.mu.Lock()
+			delete(c.awaiting, msgID)
+			c.mu.Unlock()
+		}
+	}()
+
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := c.ensureThread(ctx); err != nil {
 			return err
@@ -157,9 +178,10 @@ func (c *conv) send(ctx context.Context, prompt string) error {
 			c.beginTyping()
 		}
 
-		params := map[string]any{"thread_id": tid, "content": prompt}
+		params := map[string]any{"thread_id": tid, "content": prompt, "message_id": msgID}
 		err := c.b.app.Call(ctx, method, params, nil)
 		if err == nil {
+			ok = true
 			return nil
 		}
 		c.turnDone() // undo the optimistic increment
@@ -267,6 +289,7 @@ func (c *conv) onServerReset() {
 	hadWork := c.active > 0
 	c.threadID = ""
 	c.active = 0
+	c.awaiting = nil // the agent process is gone, these will never be consumed
 	stop := c.stopTyping
 	c.stopTyping = nil
 	c.mu.Unlock()
@@ -277,6 +300,25 @@ func (c *conv) onServerReset() {
 	if hadWork {
 		c.reply("_Connection to the agent server was lost and the running request was aborted. Your next message resumes the conversation._")
 	}
+}
+
+// messageConsumed reacts with :eyes: to the post whose message the agent just picked up.
+func (c *conv) messageConsumed(msgID string) {
+	c.mu.Lock()
+	postID, ok := c.awaiting[msgID]
+	delete(c.awaiting, msgID)
+	c.mu.Unlock()
+	if !ok {
+		return
+	}
+	go func() {
+		time.Sleep(reactionDelay)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.b.mm.AddReaction(ctx, c.b.me.ID, postID, "eyes"); err != nil {
+			slog.Warn("could not add eyes reaction", "err", err)
+		}
+	}()
 }
 
 func (c *conv) turnDone() {

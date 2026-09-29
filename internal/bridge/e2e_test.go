@@ -206,6 +206,11 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"thread_id": "T1", "cli_session_id": "S1", "attached": true}})
 			case "turn/start":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"turn_id": "U1"}})
+				var sp struct {
+					MessageID string `json:"message_id"`
+				}
+				json.Unmarshal(req.Params, &sp)
+				send(map[string]any{"jsonrpc": "2.0", "method": "message/consumed", "params": map[string]any{"thread_id": "T1", "message_id": sp.MessageID}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
 					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})

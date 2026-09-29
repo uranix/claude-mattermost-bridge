@@ -206,6 +206,7 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		ThreadID  string          `json:"thread_id"`
 		RequestID string          `json:"request_id"`
 		Reason    string          `json:"reason"`
+		MessageID string          `json:"message_id"`
 		TurnID    string          `json:"turn_id"`
 		Status    string          `json:"status"`
 		Error     string          `json:"error"`
@@ -241,6 +242,8 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 				c.reply("`" + it.Name + "` " + summarizeInput(it.Input))
 			}
 		}
+	case "message/consumed":
+		c.messageConsumed(p.MessageID)
 	case "turn/completed":
 		c.turnDone()
 		c.sessionRan()
