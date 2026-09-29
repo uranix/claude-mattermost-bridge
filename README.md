@@ -8,11 +8,21 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
 
 - The bot logs in with a Mattermost bot token: REST for posting, WebSocket for
   incoming `posted` events. Both reconnect with backoff.
-- **DM**: one Claude thread per DM channel, replies are flat.
-- **Channels / group DMs** (`MM_ALLOW_CHANNELS=1`): an `@bot` mention opens a
-  Claude thread bound to that Mattermost thread; replies go into it. Follow-ups
-  in that thread need no mention. Prompts are prefixed with `@author:`.
-- Only usernames in `MM_ALLOWED_USERS` are served; everyone else is ignored.
+- **DM**: one Claude thread per DM channel, replies are flat. Only usernames in
+  `MM_ALLOWED_USERS` may use the bot in DMs.
+- **Channels / group DMs**: only those listed in `MM_ALLOWED_CHANNELS` (channel
+  IDs or channel names, comma separated; empty means none). Inside a listed
+  channel **every human is equal**: they can chat with the bot, answer its
+  permission prompts and change its settings (`!mode`, `!trust`, `!model`,
+  `!new`...). `MM_ALLOWED_USERS` does not apply there, and other bots are
+  ignored. An `@bot` mention opens a Claude thread bound to that Mattermost
+  thread; replies go into it, and follow-ups in it need no mention. Prompts are
+  prefixed with `@author:` because several people can share a thread.
+  Names are the URL name of the channel (not the display name) and are not
+  unique across teams; use the channel ID (channel menu > View Info) when the
+  bot is in several teams. `CLAUDE_CHANNEL_PERMISSION_MODE` sets a different
+  permission mode for channel conversations, for example `default` so that
+  edits ask first.
 - Every finished text item of a turn is posted as its own message (interim
   commentary and the final answer). Thinking and tool output are not forwarded
   (`BRIDGE_SHOW_TOOLS=1` adds one line per tool call). A typing indicator shows
@@ -66,9 +76,9 @@ withdraws pending prompts.
 `CLAUDE_PERMISSION_MODE` decides what is asked at all: `default` asks for edits and
 commands, `acceptEdits` only for commands, `auto` rarely, `bypassPermissions` never.
 
-- Only usernames in `MM_ALLOWED_USERS` count; reactions from anyone else, and the
-  bot's own, are ignored. In a shared channel thread any allowed user can answer
-  prompts and change the trust list, and trust applies to everyone in that thread.
+- In DMs only usernames in `MM_ALLOWED_USERS` can answer; in an allowed channel
+  anyone can, and so can change the trust list, which then applies to everyone in
+  that thread. Reactions from other bots and the bot's own are ignored.
 - `!trust all` and `!trust Bash` are bridge-side and need no server flag, unlike
   `bypassPermissions`. They are as strong as clicking :white_check_mark: every time.
 - Why reactions and not buttons: Mattermost buttons make the *Mattermost server*

@@ -15,8 +15,12 @@ type Config struct {
 	MattermostURL string // e.g. https://chat.example.com
 	Token         string // bot access token (read from MM_TOKEN_FILE or MM_TOKEN)
 
-	AllowedUsers  map[string]bool // Mattermost usernames, lowercase, without '@'
-	AllowChannels bool            // respond to @mentions in channels and group DMs
+	AllowedUsers map[string]bool // Mattermost usernames, lowercase, without '@'
+	// AllowedChannels lists the channels (IDs or channel names, lowercase) and group
+	// DMs the bot answers in. Every human there is equal; MM_ALLOWED_USERS does not
+	// apply. Empty means no channels.
+	AllowedChannels map[string]bool
+	ChannelMode     string // permission mode for new channel conversations; "" means PermissionMode
 
 	AppServerURL   string // ws://127.0.0.1:3284?key=...
 	Cwd            string
@@ -43,7 +47,8 @@ func Load() (*Config, error) {
 		Model:             os.Getenv("CLAUDE_MODEL"),
 		AttachDir:         getenv("BRIDGE_ATTACHMENT_DIR", "attachments"),
 		StateFile:         getenv("BRIDGE_STATE_FILE", "state.json"),
-		AllowChannels:     truthy(os.Getenv("MM_ALLOW_CHANNELS")),
+		ChannelMode:       os.Getenv("CLAUDE_CHANNEL_PERMISSION_MODE"),
+		AllowedChannels:   map[string]bool{},
 		ShowTools:         truthy(os.Getenv("BRIDGE_SHOW_TOOLS")),
 		SendFiles:         getenv("BRIDGE_SEND_FILES", "1") != "0",
 		PermissionPrompts: getenv("BRIDGE_PERMISSION_PROMPTS", "1") != "0",
@@ -78,8 +83,16 @@ func Load() (*Config, error) {
 			c.AllowedUsers[u] = true
 		}
 	}
-	if len(c.AllowedUsers) == 0 {
-		return nil, fmt.Errorf("MM_ALLOWED_USERS is empty: the bot would ignore everyone")
+	for _, ch := range strings.Split(os.Getenv("MM_ALLOWED_CHANNELS"), ",") {
+		if ch = strings.ToLower(strings.TrimSpace(ch)); ch != "" {
+			c.AllowedChannels[ch] = true
+		}
+	}
+	if len(c.AllowedChannels) == 0 && (truthy(os.Getenv("MM_ALLOW_CHANNELS")) || truthy(os.Getenv("MM_CHANNEL_ANYONE"))) {
+		return nil, fmt.Errorf("MM_ALLOW_CHANNELS is gone: list the channels the bot may answer in with MM_ALLOWED_CHANNELS (IDs or channel names); everyone in them may use the bot, and MM_ALLOWED_USERS now applies to DMs only")
+	}
+	if len(c.AllowedUsers) == 0 && len(c.AllowedChannels) == 0 {
+		return nil, fmt.Errorf("both MM_ALLOWED_USERS (DMs) and MM_ALLOWED_CHANNELS are empty: the bot would ignore everyone")
 	}
 	for _, r := range strings.Split(os.Getenv("BRIDGE_SEND_ROOTS"), ",") {
 		if r = strings.TrimSpace(r); r != "" {

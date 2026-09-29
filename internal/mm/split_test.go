@@ -29,3 +29,10 @@ func TestSplit(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePostedCarriesChannelName(t *testing.T) {
+	ev, ok := parsePosted([]byte(`{"event":"posted","data":{"channel_type":"O","channel_name":"town-square","mentions":"[\"u1\"]","post":"{\"id\":\"p\",\"channel_id\":\"c\",\"user_id\":\"u\",\"message\":\"hi\"}"}}`))
+	if !ok || ev.ChannelName != "town-square" || ev.ChannelType != "O" || ev.Post.ChannelID != "c" || len(ev.Mentions) != 1 {
+		t.Fatalf("got %+v ok=%v", ev, ok)
+	}
+}

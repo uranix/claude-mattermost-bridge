@@ -55,6 +55,7 @@ type Reaction struct {
 type Posted struct {
 	Post        Post
 	ChannelType string // D direct, G group, O open, P private
+	ChannelName string // the channel's URL name (a hash for DMs and group DMs)
 	Mentions    []string
 }
 
@@ -324,6 +325,7 @@ func parsePosted(data []byte) (Posted, bool) {
 		Data  struct {
 			Post        string `json:"post"`
 			ChannelType string `json:"channel_type"`
+			ChannelName string `json:"channel_name"`
 			Mentions    string `json:"mentions"`
 		} `json:"data"`
 	}
@@ -338,5 +340,5 @@ func parsePosted(data []byte) (Posted, bool) {
 	if e.Data.Mentions != "" {
 		_ = json.Unmarshal([]byte(e.Data.Mentions), &mentions)
 	}
-	return Posted{Post: p, ChannelType: e.Data.ChannelType, Mentions: mentions}, true
+	return Posted{Post: p, ChannelType: e.Data.ChannelType, ChannelName: e.Data.ChannelName, Mentions: mentions}, true
 }

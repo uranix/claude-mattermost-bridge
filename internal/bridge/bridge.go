@@ -56,17 +56,39 @@ func (b *Bridge) Run(ctx context.Context) {
 	b.mm.Listen(ctx, func(ev mm.Posted) { b.onPosted(ctx, ev) }, func(r mm.Reaction) { go b.onReaction(ctx, r) })
 }
 
-func (b *Bridge) username(ctx context.Context, id string) (string, bool) {
+func (b *Bridge) user(ctx context.Context, id string) (mm.User, bool) {
 	if v, ok := b.users.Load(id); ok {
-		return v.(string), true
+		return v.(mm.User), true
 	}
 	u, err := b.mm.User(ctx, id)
 	if err != nil {
 		slog.Warn("user lookup failed", "id", id, "err", err)
-		return "", false
+		return mm.User{}, false
 	}
-	b.users.Store(id, u.Username)
-	return u.Username, true
+	b.users.Store(id, u)
+	return u, true
+}
+
+// mayUse says whether a user may use the bot, for everything: chatting, approving
+// tools, changing settings. DMs are limited to MM_ALLOWED_USERS. In a channel the
+// channel allowlist has already been applied, and every human there is equal
+// (other bots never count).
+func (b *Bridge) mayUse(u mm.User, inChannel bool) bool {
+	if inChannel {
+		return !u.IsBot
+	}
+	return b.cfg.AllowedUsers[strings.ToLower(u.Username)]
+}
+
+// channelAllowed reports whether the bot may answer in this channel, by ID or name.
+func (b *Bridge) channelAllowed(ev mm.Posted) bool {
+	return b.cfg.AllowedChannels[strings.ToLower(ev.Post.ChannelID)] ||
+		(ev.ChannelName != "" && b.cfg.AllowedChannels[strings.ToLower(ev.ChannelName)])
+}
+
+func (b *Bridge) username(ctx context.Context, id string) (string, bool) {
+	u, ok := b.user(ctx, id)
+	return u.Username, ok
 }
 
 func (b *Bridge) onPosted(ctx context.Context, ev mm.Posted) {
@@ -74,13 +96,20 @@ func (b *Bridge) onPosted(ctx context.Context, ev mm.Posted) {
 	if p.UserID == b.me.ID || p.Type != "" { // own posts and system messages
 		return
 	}
-	name, ok := b.username(ctx, p.UserID)
-	if !ok || !b.cfg.AllowedUsers[strings.ToLower(name)] {
-		slog.Debug("ignored post from non-allowed user", "user", name)
+	u, ok := b.user(ctx, p.UserID)
+	if !ok {
 		return
 	}
-
+	name := u.Username
 	direct := ev.ChannelType == "D"
+	if !direct && !b.channelAllowed(ev) {
+		slog.Debug("ignored post in a channel that is not allowed", "channel", ev.ChannelName)
+		return
+	}
+	if !b.mayUse(u, !direct) {
+		slog.Debug("ignored post from a user without access", "user", name)
+		return
+	}
 	mentioned := b.mention.MatchString(p.Message)
 	for _, id := range ev.Mentions {
 		if id == b.me.ID {
@@ -91,9 +120,6 @@ func (b *Bridge) onPosted(ctx context.Context, ev mm.Posted) {
 	key := "dm:" + p.ChannelID
 	rootID := "" // DMs are flat: replies are not threaded
 	if !direct {
-		if !b.cfg.AllowChannels {
-			return
-		}
 		root := p.RootID
 		if root == "" {
 			root = p.ID
@@ -121,7 +147,11 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 	defer b.mu.Unlock()
 	c, ok := b.convs[key]
 	if !ok {
-		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, model: b.cfg.Model, trusted: map[string]bool{}, inbox: make(chan inbound, 64), out: make(chan func(), 256)}
+		mode := b.cfg.PermissionMode
+		if b.cfg.ChannelMode != "" && strings.HasPrefix(key, "ch:") {
+			mode = b.cfg.ChannelMode
+		}
+		c = &conv{b: b, key: key, channelID: channelID, mode: mode, model: b.cfg.Model, trusted: map[string]bool{}, inbox: make(chan inbound, 64), out: make(chan func(), 256)}
 		if st, ok := b.state.get(key); ok {
 			c.cliSessionID = st.CliSessionID
 			c.model = st.Model // "" means the user chose the default

@@ -354,9 +354,10 @@ func (b *Bridge) onReaction(ctx context.Context, r mm.Reaction) {
 	if p == nil {
 		return
 	}
-	name, ok := b.username(ctx, r.UserID)
-	if !ok || !b.cfg.AllowedUsers[strings.ToLower(name)] {
-		slog.Debug("ignored reaction from non-allowed user", "user", name)
+	u, ok := b.user(ctx, r.UserID)
+	name := u.Username
+	if !ok || !b.mayUse(u, strings.HasPrefix(p.conv.key, "ch:")) {
+		slog.Debug("ignored reaction from a user without access", "user", name)
 		return
 	}
 	switch {

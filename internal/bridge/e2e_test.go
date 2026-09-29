@@ -40,6 +40,9 @@ func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
 	mux.HandleFunc("/api/v4/users/alice", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(mm.User{ID: "alice", Username: "Alice"})
 	})
+	mux.HandleFunc("/api/v4/users/botty", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(mm.User{ID: "botty", Username: "botty", IsBot: true})
+	})
 	mux.HandleFunc("/api/v4/users/mallory", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(mm.User{ID: "mallory", Username: "mallory"})
 	})
@@ -114,8 +117,12 @@ func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
 }
 
 func (f *fakeMM) say(channelType, channelID, id, rootID, text string) {
-	post, _ := json.Marshal(mm.Post{ID: id, ChannelID: channelID, UserID: "alice", RootID: rootID, Message: text})
-	ev, _ := json.Marshal(map[string]any{"event": "posted", "data": map[string]any{"post": string(post), "channel_type": channelType}})
+	f.sayAs("alice", channelType, channelID, id, rootID, text)
+}
+
+func (f *fakeMM) sayAs(userID, channelType, channelID, id, rootID, text string) {
+	post, _ := json.Marshal(mm.Post{ID: id, ChannelID: channelID, UserID: userID, RootID: rootID, Message: text})
+	ev, _ := json.Marshal(map[string]any{"event": "posted", "data": map[string]any{"post": string(post), "channel_type": channelType, "channel_name": "name-" + channelID}})
 	f.ws <- ev
 }
 
@@ -230,7 +237,7 @@ func TestEndToEnd(t *testing.T) {
 
 	cfg := &config.Config{
 		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
-		AllowChannels: true, AppServerURL: "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		AllowedChannels: map[string]bool{"chan": true}, AppServerURL: "ws" + strings.TrimPrefix(asrv.URL, "http"),
 		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
 	}
 	client := mm.New(msrv.URL, "tok")
