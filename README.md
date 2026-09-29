@@ -66,3 +66,7 @@ Unknown `!words` are sent to Claude as ordinary text.
 - Outgoing files/images (Claude producing attachments) are not implemented;
   the codex bridge does this via Markdown links in the final answer.
 - Posts edited or deleted after sending are ignored.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
