@@ -101,6 +101,20 @@ func (c *conv) retype() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = c.b.mm.Typing(ctx, c.b.me.ID, c.channelID, root)
+	// Once more shortly after: a client that handles the post late would
+	// otherwise clear the indicator we just set. Async, so posts are not delayed.
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		c.mu.Lock()
+		busy := c.active > 0
+		c.mu.Unlock()
+		if !busy {
+			return
+		}
+		rctx, rcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer rcancel()
+		_ = c.b.mm.Typing(rctx, c.b.me.ID, c.channelID, root)
+	}()
 }
 
 func (c *conv) replyRoot() string {
@@ -362,7 +376,7 @@ func (c *conv) beginTyping() {
 	c.stopTyping = cancel
 	c.mu.Unlock()
 	go func() {
-		t := time.NewTicker(4 * time.Second)
+		t := time.NewTicker(2 * time.Second)
 		defer t.Stop()
 		for {
 			c.mu.Lock()
