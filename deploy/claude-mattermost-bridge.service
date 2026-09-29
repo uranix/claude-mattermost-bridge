@@ -1,0 +1,13 @@
+[Unit]
+Description=Mattermost <-> claude-app-server bridge
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/claude-mattermost-bridge/bot.env
+WorkingDirectory=%h/claude-mattermost-bridge
+ExecStart=%h/claude-mattermost-bridge/claude-mattermost-bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
