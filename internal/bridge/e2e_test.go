@@ -3,9 +3,12 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,9 +22,10 @@ import (
 )
 
 type fakeMM struct {
-	mu    sync.Mutex
-	posts []map[string]any
-	ws    chan []byte
+	mu      sync.Mutex
+	posts   []map[string]any
+	uploads []string // "channel:filename:content"
+	ws      chan []byte
 }
 
 func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
@@ -34,6 +38,32 @@ func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
 		json.NewEncoder(w).Encode(mm.User{ID: "alice", Username: "Alice"})
 	})
 	mux.HandleFunc("/api/v4/users/bot1/typing", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/api/v4/files", func(w http.ResponseWriter, r *http.Request) {
+		mr, err := r.MultipartReader()
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		var channel, name, body string
+		for {
+			part, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			b, _ := io.ReadAll(part)
+			switch part.FormName() {
+			case "channel_id":
+				channel = string(b)
+			case "files":
+				name, body = part.FileName(), string(b)
+			}
+		}
+		f.mu.Lock()
+		f.uploads = append(f.uploads, channel+":"+name+":"+body)
+		id := "F" + strconv.Itoa(len(f.uploads))
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"file_infos": []map[string]any{{"id": id}}})
+	})
 	mux.HandleFunc("/api/v4/posts", func(w http.ResponseWriter, r *http.Request) {
 		var p map[string]any
 		json.NewDecoder(r.Body).Decode(&p)
@@ -85,6 +115,10 @@ func (f *fakeMM) waitPost(t *testing.T, contains string) map[string]any {
 
 // fakeApp answers turn/start with one text item and turn/completed.
 func newFakeApp(t *testing.T, calls chan string) *httptest.Server {
+	return newFakeAppText(t, calls, "hello from claude")
+}
+
+func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
 		if err != nil {
@@ -124,7 +158,7 @@ func newFakeApp(t *testing.T, calls chan string) *httptest.Server {
 			case "turn/start":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"turn_id": "U1"}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
-					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": "hello from claude"}}}})
+					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})
 			default:
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
@@ -362,5 +396,88 @@ func TestModelCommand(t *testing.T) {
 	fm.waitPost(t, "Unknown model")
 	if b, _ := os.ReadFile(cfg.StateFile); !strings.Contains(string(b), `"model": "opus"`) {
 		t.Fatalf("selection should be persisted: %s", b)
+	}
+}
+
+func TestSendFilesBack(t *testing.T) {
+	cwd := t.TempDir()
+	os.WriteFile(cwd+"/plot.png", []byte("PNGDATA"), 0o644)
+	os.MkdirAll(cwd+"/out", 0o755)
+	os.WriteFile(cwd+"/out/data.csv", []byte("a,b\n1,2\n"), 0o644)
+	// Outside every allowed root (created next to the sources, not under /tmp).
+	outside, _ := os.MkdirTemp(".", "outside-")
+	t.Cleanup(func() { os.RemoveAll(outside) })
+	os.WriteFile(outside+"/secret.txt", []byte("s3cret"), 0o644)
+	secretPath, _ := filepath.Abs(outside + "/secret.txt")
+
+	reply := "Here you go\n\n" +
+		"![the plot](" + cwd + "/plot.png)\n" +
+		"[results.csv](<out/data.csv>)\n" +
+		"[key](" + secretPath + ")\n" +
+		"```\n![example](/not/uploaded.png)\n```"
+
+	calls := make(chan string, 64)
+	asrv := newFakeAppText(t, calls, reply)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL: "ws" + strings.TrimPrefix(asrv.URL, "http"), Cwd: cwd, SendFiles: true,
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmchan", "p1", "", "make a plot")
+	p := fm.waitPost(t, "Here you go")
+
+	msg := p["message"].(string)
+	if strings.Contains(msg, "plot.png") || strings.Contains(msg, "data.csv") {
+		t.Errorf("file lines should be removed from the text:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Could not attach `key`") || strings.Contains(msg, "s3cret") {
+		t.Errorf("the disallowed file must be refused with a notice:\n%s", msg)
+	}
+	if !strings.Contains(msg, "![example](/not/uploaded.png)") {
+		t.Errorf("code fences must be left alone:\n%s", msg)
+	}
+	ids, _ := p["file_ids"].([]any)
+	if len(ids) != 2 {
+		t.Fatalf("expected two attachments, got %v", p["file_ids"])
+	}
+
+	fm.mu.Lock()
+	uploads := append([]string(nil), fm.uploads...)
+	fm.mu.Unlock()
+	want := []string{"dmchan:plot.png:PNGDATA", "dmchan:results.csv:a,b\n1,2\n"}
+	if len(uploads) != 2 || uploads[0] != want[0] || uploads[1] != want[1] {
+		t.Fatalf("uploads = %q, want %q", uploads, want)
+	}
+
+	// The agent was told the convention when the thread started.
+	if got := strings.Join(drain(calls), "\n"); !strings.Contains(got, "append_system_prompt") {
+		t.Fatalf("thread/start should carry the file-sending instructions:\n%s", got)
+	}
+}
+
+func TestSendFilesDisabled(t *testing.T) {
+	cwd := t.TempDir()
+	os.WriteFile(cwd+"/plot.png", []byte("x"), 0o644)
+	calls := make(chan string, 64)
+	asrv := newFakeAppText(t, calls, "text\n![p]("+cwd+"/plot.png)")
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL: "ws" + strings.TrimPrefix(asrv.URL, "http"), Cwd: cwd, SendFiles: false,
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+	fm.say("D", "dmchan", "p1", "", "hi")
+	p := fm.waitPost(t, "text")
+	if !strings.Contains(p["message"].(string), "plot.png") || len(fm.uploads) != 0 {
+		t.Fatalf("with sending disabled the text must pass through untouched: %v uploads=%v", p, fm.uploads)
+	}
+	if got := strings.Join(drain(calls), "\n"); strings.Contains(got, "append_system_prompt") {
+		t.Fatalf("no instructions should be sent when disabled:\n%s", got)
 	}
 }

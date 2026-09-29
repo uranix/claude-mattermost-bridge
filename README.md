@@ -27,6 +27,36 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
 - Attached files are downloaded to `BRIDGE_ATTACHMENT_DIR` (mode 600) and passed
   to Claude as local paths; the app server must share the filesystem.
 
+## Files and images from Claude
+
+The bridge tells Claude (via the server's `append_system_prompt`, on every start
+and resume of a thread) to reference files it wants delivered as a standalone
+line, outside code blocks:
+
+```markdown
+![short caption](/absolute/path/plot.png)
+[report.csv](/absolute/path/report.csv)
+```
+
+Such lines are removed from the text, the files are uploaded to Mattermost and
+attached to that message. Details:
+
+- Images and other files both become Mattermost attachments (images preview
+  inline). The link label of a plain file is its file name; an image keeps its
+  own name, and its caption is shown only when the reply has no other text.
+- Links inside sentences, web links and anything in code fences are left alone.
+  Relative paths resolve against `CLAUDE_CWD`; `sandbox:/abs/path` works too.
+- **Allowlist.** The agent's output is untrusted (a prompt injection could ask it
+  to send `~/.ssh/id_rsa`), so files must lie under `CLAUDE_CWD`, the attachment
+  directory, `/tmp`, `/var/tmp` or a directory in `BRIDGE_SEND_ROOTS`. Symlinks
+  are resolved first, so a link cannot lead outside. Anything else is refused
+  with a visible notice in the reply.
+- Limits: 8 files per message, `BRIDGE_MAX_FILE_MB` (default 50) each, and
+  Mattermost's own upload limit; 10 attachments fit on one post, more are sent
+  in follow-up posts. The same file twice is sent once.
+- The app server and the bridge must share the filesystem (same paths).
+- `BRIDGE_SEND_FILES=0` turns the feature off (no instructions, no uploads).
+
 ## Commands
 
 Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
@@ -78,8 +108,6 @@ Unknown `!words` are sent to Claude as ordinary text.
   denied tools are reported (`turn/permission_denied`) and the user can raise the
   mode with `!mode`. Default mode is `acceptEdits`.
 - Posts made while the Mattermost WebSocket is down are not replayed.
-- Outgoing files/images (Claude producing attachments) are not implemented;
-  the codex bridge does this via Markdown links in the final answer.
 - Posts edited or deleted after sending are ignored.
 
 ## License

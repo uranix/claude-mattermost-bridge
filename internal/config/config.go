@@ -25,6 +25,8 @@ type Config struct {
 	AttachDir string
 	StateFile string        // conversation -> CLI session map; "" disables persistence
 	IdleClose time.Duration // close a conversation's server thread after this much inactivity; 0 disables
+	SendFiles bool          // upload files the agent references in its replies
+	SendRoots []string      // extra directories (besides cwd, attachments, /tmp) files may be sent from
 	ShowTools bool
 	Debug     bool
 }
@@ -40,6 +42,7 @@ func Load() (*Config, error) {
 		StateFile:      getenv("BRIDGE_STATE_FILE", "state.json"),
 		AllowChannels:  truthy(os.Getenv("MM_ALLOW_CHANNELS")),
 		ShowTools:      truthy(os.Getenv("BRIDGE_SHOW_TOOLS")),
+		SendFiles:      getenv("BRIDGE_SEND_FILES", "1") != "0",
 		Debug:          truthy(os.Getenv("BRIDGE_DEBUG")),
 		AllowedUsers:   map[string]bool{},
 	}
@@ -66,6 +69,11 @@ func Load() (*Config, error) {
 	}
 	if len(c.AllowedUsers) == 0 {
 		return nil, fmt.Errorf("MM_ALLOWED_USERS is empty: the bot would ignore everyone")
+	}
+	for _, r := range strings.Split(os.Getenv("BRIDGE_SEND_ROOTS"), ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			c.SendRoots = append(c.SendRoots, r)
+		}
 	}
 	c.IdleClose = time.Hour
 	if v := os.Getenv("BRIDGE_IDLE_CLOSE"); v != "" {

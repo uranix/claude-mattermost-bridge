@@ -119,7 +119,7 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 	defer b.mu.Unlock()
 	c, ok := b.convs[key]
 	if !ok {
-		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, model: b.cfg.Model, inbox: make(chan inbound, 64)}
+		c = &conv{b: b, key: key, channelID: channelID, mode: b.cfg.PermissionMode, model: b.cfg.Model, inbox: make(chan inbound, 64), out: make(chan func(), 256)}
 		if st, ok := b.state.get(key); ok {
 			c.cliSessionID = st.CliSessionID
 			c.model = st.Model // "" means the user chose the default
@@ -129,19 +129,43 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 		}
 		b.convs[key] = c
 		go c.worker()
+		go c.outWorker()
 	}
 	return c
 }
 
 // post sends text to a conversation, splitting it to fit Mattermost limits.
 func (b *Bridge) post(channelID, rootID, text string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	b.postFiles(channelID, rootID, text, nil)
+}
+
+// postFiles is post with attachments: the files ride on the last text chunk,
+// or on posts of their own when there is no text or more than the per-post limit.
+func (b *Bridge) postFiles(channelID, rootID, text string, fileIDs []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	for _, part := range mm.Split(text, mm.MaxPostRunes) {
-		if err := b.mm.CreatePost(ctx, channelID, rootID, part); err != nil {
+	parts := mm.Split(text, mm.MaxPostRunes)
+	if len(parts) == 0 && len(fileIDs) > 0 {
+		parts = []string{""}
+	}
+	for i, part := range parts {
+		var ids []string
+		if i == len(parts)-1 {
+			n := min(len(fileIDs), mm.MaxFilesPerPost)
+			ids, fileIDs = fileIDs[:n], fileIDs[n:]
+		}
+		if err := b.mm.CreatePost(ctx, channelID, rootID, part, ids); err != nil {
 			slog.Error("post failed", "channel", channelID, "err", err)
 			return
 		}
+	}
+	for len(fileIDs) > 0 { // more files than fit on one post
+		n := min(len(fileIDs), mm.MaxFilesPerPost)
+		if err := b.mm.CreatePost(ctx, channelID, rootID, "", fileIDs[:n]); err != nil {
+			slog.Error("post failed", "channel", channelID, "err", err)
+			return
+		}
+		fileIDs = fileIDs[n:]
 	}
 }
 
@@ -204,7 +228,7 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		it := p.Item.Item
 		switch it.Type {
 		case "text":
-			c.reply(it.Text)
+			c.replyAgent(it.Text)
 		case "tool_call":
 			if b.cfg.ShowTools {
 				c.reply("`" + it.Name + "` " + summarizeInput(it.Input))

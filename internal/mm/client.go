@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,13 +50,18 @@ type Posted struct {
 }
 
 type Client struct {
-	base  string
-	token string
-	http  *http.Client
+	base   string
+	token  string
+	http   *http.Client
+	upload *http.Client // same, without a total timeout, for large files
 }
 
 func New(base, token string) *Client {
-	return &Client{base: strings.TrimRight(base, "/"), token: token, http: &http.Client{Timeout: 60 * time.Second}}
+	return &Client{
+		base: strings.TrimRight(base, "/"), token: token,
+		http:   &http.Client{Timeout: 60 * time.Second},
+		upload: &http.Client{},
+	}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
@@ -102,10 +108,67 @@ func (c *Client) User(ctx context.Context, id string) (User, error) {
 	return u, err
 }
 
-func (c *Client) CreatePost(ctx context.Context, channelID, rootID, message string) error {
-	return c.do(ctx, "POST", "/posts", map[string]any{
-		"channel_id": channelID, "root_id": rootID, "message": message,
-	}, nil)
+func (c *Client) CreatePost(ctx context.Context, channelID, rootID, message string, fileIDs []string) error {
+	body := map[string]any{"channel_id": channelID, "root_id": rootID, "message": message}
+	if len(fileIDs) > 0 {
+		body["file_ids"] = fileIDs
+	}
+	return c.do(ctx, "POST", "/posts", body, nil)
+}
+
+// MaxFilesPerPost is Mattermost's limit of attachments on one post.
+const MaxFilesPerPost = 10
+
+// UploadFile streams a local file to Mattermost and returns its file ID, to be
+// attached to a post in the same channel. Large files are not buffered.
+func (c *Client) UploadFile(ctx context.Context, channelID, filename, path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		err := mw.WriteField("channel_id", channelID) // must precede the file part
+		if err == nil {
+			var part io.Writer
+			if part, err = mw.CreateFormFile("files", filename); err == nil {
+				_, err = io.Copy(part, f)
+			}
+		}
+		if err == nil {
+			err = mw.Close()
+		}
+		pw.CloseWithError(err)
+	}()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.base+"/api/v4/files", pr)
+	if err != nil {
+		pr.Close()
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := c.upload.Do(req) // no overall timeout; ctx bounds it
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return "", fmt.Errorf("upload %s: %s: %s", filename, resp.Status, strings.TrimSpace(string(b)))
+	}
+	var out struct {
+		FileInfos []struct {
+			ID string `json:"id"`
+		} `json:"file_infos"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || len(out.FileInfos) == 0 {
+		return "", fmt.Errorf("upload %s: unexpected response", filename)
+	}
+	return out.FileInfos[0].ID, nil
 }
 
 // Typing shows the "bot is typing" indicator; it expires after a few seconds.

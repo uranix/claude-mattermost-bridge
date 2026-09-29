@@ -32,6 +32,7 @@ type conv struct {
 	key       string
 	channelID string
 	inbox     chan inbound
+	out       chan func() // ordered outgoing posts, so slow uploads only delay this conversation
 
 	opMu sync.Mutex // held while handling a message or idle-closing, so the two never overlap
 
@@ -61,11 +62,28 @@ func (c *conv) worker() {
 	}
 }
 
-func (c *conv) reply(text string) {
+func (c *conv) outWorker() {
+	for job := range c.out {
+		job()
+	}
+}
+
+func (c *conv) replyRoot() string {
 	c.mu.Lock()
-	root := c.rootID
-	c.mu.Unlock()
-	c.b.post(c.channelID, root, text)
+	defer c.mu.Unlock()
+	return c.rootID
+}
+
+// reply queues a plain message. The reply target is fixed at call time.
+func (c *conv) reply(text string) {
+	root := c.replyRoot()
+	c.out <- func() { c.b.post(c.channelID, root, text) }
+}
+
+// replyAgent queues a text item of the agent, which may reference files to upload.
+func (c *conv) replyAgent(text string) {
+	root := c.replyRoot()
+	c.out <- func() { c.deliverAgentText(root, text) }
 }
 
 func (c *conv) handle(in inbound) {
@@ -167,6 +185,9 @@ func (c *conv) ensureThread(ctx context.Context) error {
 	params := map[string]any{"permission_mode": mode}
 	if model != "" {
 		params["model"] = model
+	}
+	if c.b.cfg.SendFiles {
+		params["append_system_prompt"] = filePrompt
 	}
 	if c.b.cfg.Cwd != "" {
 		params["cwd"] = c.b.cfg.Cwd
