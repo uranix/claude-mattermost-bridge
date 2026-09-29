@@ -118,7 +118,16 @@ func (c *conv) handle(in inbound) {
 	if err := c.send(ctx, prompt); err != nil {
 		slog.Error("send failed", "conv", c.key, "err", err)
 		c.reply("**Error:** " + err.Error())
+		return
 	}
+	// Acknowledge that the message reached the app server.
+	go func() {
+		rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer rcancel()
+		if err := c.b.mm.AddReaction(rctx, c.b.me.ID, in.post.ID, "eyes"); err != nil {
+			slog.Warn("could not add eyes reaction", "err", err)
+		}
+	}()
 }
 
 // send starts a turn, or steers the running one when the agent is busy.

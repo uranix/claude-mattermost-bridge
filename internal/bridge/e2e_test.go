@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -278,9 +279,32 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal("channel prompt missing author label / mention not stripped")
 	}
 
-	// Commands are answered locally.
+	// Messages delivered to the app server get an :eyes: reaction; commands do not.
 	fm.say("D", "dmchan", "p4", "", "!help")
 	fm.waitPost(t, "Commands")
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		fm.mu.Lock()
+		n := 0
+		for _, r := range fm.reactions {
+			if r == "p1:eyes" || r == "p3:eyes" {
+				n++
+			}
+		}
+		fm.mu.Unlock()
+		if n == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if !slices.Contains(fm.reactions, "p1:eyes") || !slices.Contains(fm.reactions, "p3:eyes") {
+		t.Errorf("missing :eyes: reactions: %v", fm.reactions)
+	}
+	if slices.Contains(fm.reactions, "p4:eyes") || slices.Contains(fm.reactions, "p2:eyes") {
+		t.Errorf("unexpected :eyes: reaction: %v", fm.reactions)
+	}
 }
 
 func startBridge(t *testing.T, cfg *config.Config, msrv *httptest.Server) context.CancelFunc {
