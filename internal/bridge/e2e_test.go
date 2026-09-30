@@ -181,6 +181,7 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 			return
 		}
 		defer c.CloseNow()
+		held := "" // message_id of a turn started with "hold", finished by the next steer
 		send := func(v any) {
 			b, _ := json.Marshal(v)
 			c.Write(r.Context(), websocket.MessageText, b)
@@ -218,6 +219,11 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 					Content   string `json:"content"`
 				}
 				json.Unmarshal(req.Params, &sp)
+				if strings.HasPrefix(sp.Content, "hold") {
+					held = sp.MessageID
+					send(map[string]any{"jsonrpc": "2.0", "method": "message/consumed", "params": map[string]any{"thread_id": "T1", "message_id": sp.MessageID}})
+					continue
+				}
 				if strings.HasPrefix(sp.Content, "/compact") {
 					send(map[string]any{"jsonrpc": "2.0", "method": "context/compacting", "params": map[string]any{"thread_id": "T1"}})
 					send(map[string]any{"jsonrpc": "2.0", "method": "context/compacted", "params": map[string]any{"thread_id": "T1", "trigger": "manual", "pre_tokens": 36735, "post_tokens": 1671}})
@@ -226,6 +232,19 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
 					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})
+			case "turn/steer":
+				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+				var sp struct {
+					MessageID string `json:"message_id"`
+				}
+				json.Unmarshal(req.Params, &sp)
+				send(map[string]any{"jsonrpc": "2.0", "method": "message/consumed", "params": map[string]any{"thread_id": "T1", "message_id": sp.MessageID}})
+				if held != "" {
+					held = ""
+					send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
+						"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
+					send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})
+				}
 			default:
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
 			}
@@ -609,5 +628,51 @@ func TestContextCommandsRunCliSlashCommands(t *testing.T) {
 		if !strings.Contains(all, want) {
 			t.Errorf("missing turn %s in:\n%s", want, all)
 		}
+	}
+}
+
+// A message that starts a turn gets :eyes: when consumed, one steered into the
+// running turn gets :writing_hand:.
+func TestSteeredMessageGetsWritingHand(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmchan", "p1", "", "hold on")
+	fm.say("D", "dmchan", "p2", "", "and this too")
+	fm.waitPost(t, "hello from claude")
+
+	want := []string{"p1:eyes", "p2:writing_hand"}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		fm.mu.Lock()
+		got := slices.Clone(fm.reactions)
+		fm.mu.Unlock()
+		if slices.Contains(got, want[0]) && slices.Contains(got, want[1]) {
+			if slices.Contains(got, "p2:eyes") || slices.Contains(got, "p1:writing_hand") {
+				t.Fatalf("wrong reactions: %v", got)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reactions %v, want %v", got, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var methods []string
+	for _, c := range drain(calls) {
+		if strings.HasPrefix(c, "turn/") {
+			methods = append(methods, strings.Fields(c)[0])
+		}
+	}
+	if !slices.Equal(methods, []string{"turn/start", "turn/steer"}) {
+		t.Fatalf("calls %v, want turn/start then turn/steer", methods)
 	}
 }

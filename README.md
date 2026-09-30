@@ -27,8 +27,11 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
   commentary and the final answer). Thinking and tool output are not forwarded
   (`BRIDGE_SHOW_TOOLS=1` adds one line per tool call). A typing indicator shows
   while the agent works. Long output is split under Mattermost's post limit.
-- A message sent while a turn runs goes through `turn/steer`, i.e. it is queued
-  as the next turn.
+- A message sent while a turn runs goes through `turn/steer`: it joins the
+  running turn and the agent reads it at its next step.
+- When the agent actually reads a message, the bot reacts to it: :eyes: for a
+  message that started a turn, :writing_hand: for one steered into a running
+  turn. Commands handled by the bridge itself get no reaction.
 - A conversation idle for `BRIDGE_IDLE_CLOSE` (default 1h) has its server thread
   closed to free the slot and process; the next message re-attaches to the same
   session, so nothing is lost.

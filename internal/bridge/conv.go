@@ -57,14 +57,14 @@ type conv struct {
 	lastActive   time.Time
 	threadID     string
 	mode         string
-	model        string            // "" = server/CLI default
-	cliSessionID string            // Claude CLI session behind threadID; survives restarts via the state file
-	attached     bool              // threadID was attached to a saved session and has not completed a turn yet
-	awaiting     map[string]string // message_id -> post ID, sent to the agent and not yet consumed
-	prompts      []*prompt         // permission prompts waiting for an answer, oldest first
-	trusted      map[string]bool   // tools this conversation runs without asking (trustKey, or trustAll)
-	active       int               // turns sent to the app server and not yet finished
-	rootID       string            // reply target of the latest inbound message
+	model        string             // "" = server/CLI default
+	cliSessionID string             // Claude CLI session behind threadID; survives restarts via the state file
+	attached     bool               // threadID was attached to a saved session and has not completed a turn yet
+	awaiting     map[string]awaited // by message_id: sent to the agent and not yet consumed
+	prompts      []*prompt          // permission prompts waiting for an answer, oldest first
+	trusted      map[string]bool    // tools this conversation runs without asking (trustKey, or trustAll)
+	active       int                // turns sent to the app server and not yet finished
+	rootID       string             // reply target of the latest inbound message
 	stopTyping   context.CancelFunc
 	typingKick   chan struct{} // asks the typing loop for an event now
 }
@@ -150,9 +150,9 @@ func (c *conv) send(ctx context.Context, prompt, postID string) error {
 	msgID := newMessageID()
 	c.mu.Lock()
 	if c.awaiting == nil {
-		c.awaiting = map[string]string{}
+		c.awaiting = map[string]awaited{}
 	}
-	c.awaiting[msgID] = postID // before the call, so a fast notification cannot be missed
+	c.awaiting[msgID] = awaited{postID: postID} // before the call, so a fast notification cannot be missed
 	c.mu.Unlock()
 	ok := false
 	defer func() {
@@ -175,6 +175,10 @@ func (c *conv) send(ctx context.Context, prompt, postID string) error {
 		}
 		c.active++
 		startTyping := c.active == 1
+		if a, ok := c.awaiting[msgID]; ok {
+			a.steer = method == "turn/steer"
+			c.awaiting[msgID] = a
+		}
 		c.mu.Unlock()
 		if startTyping {
 			c.beginTyping()
@@ -304,21 +308,33 @@ func (c *conv) onServerReset() {
 	}
 }
 
-// messageConsumed reacts with :eyes: to the post whose message the agent just picked up.
+// awaited is a message sent to the agent, waiting to be consumed.
+type awaited struct {
+	postID string
+	steer  bool // sent into a running turn
+}
+
+// messageConsumed reacts to the post whose message the agent just picked up:
+// :eyes: for a message that started a turn, :writing_hand: for one steered into
+// a running turn.
 func (c *conv) messageConsumed(msgID string) {
 	c.mu.Lock()
-	postID, ok := c.awaiting[msgID]
+	a, ok := c.awaiting[msgID]
 	delete(c.awaiting, msgID)
 	c.mu.Unlock()
 	if !ok {
 		return
 	}
+	emoji := "eyes"
+	if a.steer {
+		emoji = "writing_hand"
+	}
 	go func() {
 		time.Sleep(reactionDelay)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := c.b.mm.AddReaction(ctx, c.b.me.ID, postID, "eyes"); err != nil {
-			slog.Warn("could not add eyes reaction", "err", err)
+		if err := c.b.mm.AddReaction(ctx, c.b.me.ID, a.postID, emoji); err != nil {
+			slog.Warn("could not add a reaction", "emoji", emoji, "err", err)
 		}
 	}()
 }
