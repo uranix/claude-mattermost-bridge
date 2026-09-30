@@ -193,6 +193,9 @@ func (b *Bridge) postFiles(channelID, rootID, text string, fileIDs []string) {
 			slog.Error("post failed", "channel", channelID, "err", err)
 			return
 		}
+		if i < len(parts)-1 || len(fileIDs) > 0 {
+			b.retypeChannel(channelID) // more posts follow in this call
+		}
 	}
 	for len(fileIDs) > 0 { // more files than fit on one post
 		n := min(len(fileIDs), mm.MaxFilesPerPost)
@@ -201,6 +204,25 @@ func (b *Bridge) postFiles(channelID, rootID, text string, fileIDs []string) {
 			return
 		}
 		fileIDs = fileIDs[n:]
+		if len(fileIDs) > 0 {
+			b.retypeChannel(channelID)
+		}
+	}
+}
+
+// retypeChannel refreshes the typing indicator of the busy conversations of a
+// channel after an intermediate post of a multi-post reply.
+func (b *Bridge) retypeChannel(channelID string) {
+	b.mu.Lock()
+	var cs []*conv
+	for _, c := range b.convs {
+		if c.channelID == channelID {
+			cs = append(cs, c)
+		}
+	}
+	b.mu.Unlock()
+	for _, c := range cs {
+		c.sendTyping()
 	}
 }
 
