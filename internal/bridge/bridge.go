@@ -222,7 +222,7 @@ func (b *Bridge) retypeChannel(channelID string) {
 	}
 	b.mu.Unlock()
 	for _, c := range cs {
-		c.sendTyping()
+		c.retype()
 	}
 }
 

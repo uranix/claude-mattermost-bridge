@@ -66,6 +66,7 @@ type conv struct {
 	active       int               // turns sent to the app server and not yet finished
 	rootID       string            // reply target of the latest inbound message
 	stopTyping   context.CancelFunc
+	typingKick   chan struct{} // asks the typing loop for an event now
 }
 
 func (c *conv) enqueue(in inbound) {
@@ -87,38 +88,6 @@ func (c *conv) outWorker() {
 		job()
 		c.retype()
 	}
-}
-
-// retype restores the typing indicator right after the bot posted: clients
-// clear it when a post arrives, and the ticker in beginTyping may be seconds away.
-// A client that handles the post late (batched websocket events) would clear an
-// indicator set too early, so it is repeated a few times shortly after.
-func (c *conv) retype() {
-	if !c.sendTyping() {
-		return
-	}
-	go func() {
-		for _, d := range []time.Duration{300, 500, 800} {
-			time.Sleep(d * time.Millisecond)
-			if !c.sendTyping() {
-				return
-			}
-		}
-	}()
-}
-
-// sendTyping sends one typing event if a turn is running, and reports whether it was.
-func (c *conv) sendTyping() bool {
-	c.mu.Lock()
-	busy, root := c.active > 0, c.rootID
-	c.mu.Unlock()
-	if !busy {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = c.b.mm.Typing(ctx, c.b.me.ID, c.channelID, root)
-	return true
 }
 
 func (c *conv) replyRoot() string {
@@ -368,34 +337,6 @@ func (c *conv) turnDone() {
 	if stop != nil {
 		stop()
 	}
-}
-
-// beginTyping keeps the typing indicator alive until the last turn finishes.
-func (c *conv) beginTyping() {
-	ctx, cancel := context.WithCancel(context.Background())
-	c.mu.Lock()
-	if c.stopTyping != nil {
-		c.stopTyping()
-	}
-	c.stopTyping = cancel
-	c.mu.Unlock()
-	go func() {
-		t := time.NewTicker(2 * time.Second)
-		defer t.Stop()
-		for {
-			c.mu.Lock()
-			root := c.rootID
-			c.mu.Unlock()
-			rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-			_ = c.b.mm.Typing(rctx, c.b.me.ID, c.channelID, root)
-			rcancel()
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-			}
-		}
-	}()
 }
 
 // ---- attachments -----------------------------------------------------------
