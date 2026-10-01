@@ -154,6 +154,7 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 		c = &conv{b: b, key: key, channelID: channelID, mode: mode, model: b.cfg.Model, trusted: map[string]bool{}, inbox: make(chan inbound, 64), out: make(chan func(), 256)}
 		if st, ok := b.state.get(key); ok {
 			c.cliSessionID = st.CliSessionID
+			c.usage.in, c.usage.out = st.TokensIn, st.TokensOut
 			c.model = st.Model // "" means the user chose the default
 			for _, k := range st.Trusted {
 				c.trusted[k] = true
@@ -262,6 +263,12 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		Trigger    string          `json:"trigger"`
 		PreTokens  int             `json:"pre_tokens"`
 		PostTokens int             `json:"post_tokens"`
+		Model      string          `json:"model"`
+		Effort     string          `json:"effort"`
+		Window     int             `json:"context_window"`
+		Context    int             `json:"context_tokens"`
+		InTokens   int             `json:"input_tokens"`
+		OutTokens  int             `json:"output_tokens"`
 		TurnID     string          `json:"turn_id"`
 		Status     string          `json:"status"`
 		Error      string          `json:"error"`
@@ -305,6 +312,10 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 			how = "manual"
 		}
 		c.reply(fmt.Sprintf("_Context compacted (%s): %s -> %s tokens._", how, humanTokens(p.PreTokens), humanTokens(p.PostTokens)))
+	case "thread/usage":
+		c.addUsage(p.Model, p.Context, p.InTokens, p.OutTokens)
+	case "thread/settings":
+		c.setSettings(p.Model, p.Effort, p.Window)
 	case "message/consumed":
 		c.messageConsumed(p.MessageID)
 	case "turn/completed":

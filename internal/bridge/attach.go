@@ -168,14 +168,20 @@ func (r fileRef) fileName(path string) string {
 
 // deliverAgentText posts one text item of the agent, uploading the files it
 // references. Runs in the conversation's outbox goroutine.
-func (c *conv) deliverAgentText(root, text string) {
+func (c *conv) deliverAgentText(root, text, footer string) {
+	withFooter := func(s string) string {
+		if footer == "" {
+			return s
+		}
+		return strings.TrimSpace(s + "\n\n" + footer)
+	}
 	if !c.b.cfg.SendFiles {
-		c.b.post(c.channelID, root, text)
+		c.b.post(c.channelID, root, withFooter(text))
 		return
 	}
 	rest, refs := extractRefs(text)
 	if len(refs) == 0 {
-		c.b.post(c.channelID, root, text)
+		c.b.post(c.channelID, root, withFooter(text))
 		return
 	}
 
@@ -217,5 +223,5 @@ func (c *conv) deliverAgentText(root, text string) {
 	if len(notes) > 0 {
 		msg = strings.TrimSpace(msg + "\n\n" + strings.Join(notes, "\n"))
 	}
-	c.b.postFiles(c.channelID, root, msg, ids)
+	c.b.postFiles(c.channelID, root, withFooter(msg), ids)
 }

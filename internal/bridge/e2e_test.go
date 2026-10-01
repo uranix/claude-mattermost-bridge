@@ -229,8 +229,11 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 					send(map[string]any{"jsonrpc": "2.0", "method": "context/compacted", "params": map[string]any{"thread_id": "T1", "trigger": "manual", "pre_tokens": 36735, "post_tokens": 1671}})
 				}
 				send(map[string]any{"jsonrpc": "2.0", "method": "message/consumed", "params": map[string]any{"thread_id": "T1", "message_id": sp.MessageID}})
+				send(map[string]any{"jsonrpc": "2.0", "method": "thread/settings", "params": map[string]any{"thread_id": "T1", "model": "claude-opus-5-5", "effort": "medium", "context_window": 1000000}})
+				send(map[string]any{"jsonrpc": "2.0", "method": "thread/usage", "params": map[string]any{"thread_id": "T1", "model": "claude-opus-5-5", "context_tokens": 45200, "input_tokens": 45200}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
 					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
+				send(map[string]any{"jsonrpc": "2.0", "method": "thread/usage", "params": map[string]any{"thread_id": "T1", "context_tokens": 45300, "output_tokens": 100}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})
 			case "turn/steer":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
@@ -674,5 +677,45 @@ func TestSteeredMessageGetsWritingHand(t *testing.T) {
 	}
 	if !slices.Equal(methods, []string{"turn/start", "turn/steer"}) {
 		t.Fatalf("calls %v, want turn/start then turn/steer", methods)
+	}
+}
+
+// Each agent message ends with the usage line as of when it was produced.
+func TestAgentMessageFooter(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmchan", "p1", "", "hi")
+	p := fm.waitPost(t, "hello from claude")
+	want := "hello from claude\n\n_opus 5.5 | medium | ctx 45.2k/1M | tokens 45.2k in, 0 out_"
+	if p["message"] != want {
+		t.Fatalf("got %q, want %q", p["message"], want)
+	}
+	time.Sleep(200 * time.Millisecond)
+	fm.say("D", "dmchan", "p2", "", "again")
+	deadline := time.Now().Add(5 * time.Second)
+	want = "hello from claude\n\n_opus 5.5 | medium | ctx 45.2k/1M | tokens 90.4k in, 100 out_"
+	for {
+		fm.mu.Lock()
+		found := false
+		for _, p := range fm.posts {
+			found = found || p["message"] == want
+		}
+		fm.mu.Unlock()
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no post %q", want)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

@@ -59,6 +59,7 @@ func (c *conv) command(in inbound) bool {
 		c.active = 0
 		c.cliSessionID = ""
 		c.attached = false
+		c.usage = usageInfo{}
 		c.mu.Unlock()
 		c.b.state.delete(c.key)
 		if tid != "" {

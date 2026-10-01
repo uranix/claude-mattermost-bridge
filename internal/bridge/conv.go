@@ -65,6 +65,7 @@ type conv struct {
 	trusted      map[string]bool    // tools this conversation runs without asking (trustKey, or trustAll)
 	active       int                // turns sent to the app server and not yet finished
 	rootID       string             // reply target of the latest inbound message
+	usage        usageInfo          // shown under each agent message
 	stopTyping   context.CancelFunc
 	typingKick   chan struct{} // asks the typing loop for an event now
 }
@@ -105,7 +106,8 @@ func (c *conv) reply(text string) {
 // replyAgent queues a text item of the agent, which may reference files to upload.
 func (c *conv) replyAgent(text string) {
 	root := c.replyRoot()
-	c.out <- func() { c.deliverAgentText(root, text) }
+	footer := c.footer() // as of this item, not of when the post goes out
+	c.out <- func() { c.deliverAgentText(root, text, footer) }
 }
 
 func (c *conv) handle(in inbound) {
@@ -398,7 +400,8 @@ func (c *conv) downloadFiles(ctx context.Context, p mm.Post) string {
 func (c *conv) sessionRan() {
 	c.mu.Lock()
 	c.attached = false
-	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode, Model: c.model, Trusted: c.trustedLocked()}
+	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode, Model: c.model, Trusted: c.trustedLocked(),
+		TokensIn: c.usage.in, TokensOut: c.usage.out}
 	c.mu.Unlock()
 	if st.CliSessionID != "" {
 		c.b.state.put(c.key, st)
@@ -424,6 +427,7 @@ func (c *conv) resumeFailed() bool {
 	if failed {
 		c.attached = false
 		c.cliSessionID = ""
+		c.usage = usageInfo{}
 	}
 	c.mu.Unlock()
 	if !failed {

@@ -18,6 +18,8 @@ type convState struct {
 	Mode         string   `json:"mode,omitempty"`
 	Model        string   `json:"model,omitempty"`   // "" = default
 	Trusted      []string `json:"trusted,omitempty"` // tools run without asking
+	TokensIn     int64    `json:"tokens_in,omitempty"`
+	TokensOut    int64    `json:"tokens_out,omitempty"`
 }
 
 // store is a small JSON file keyed by conversation key. A path of "" keeps
