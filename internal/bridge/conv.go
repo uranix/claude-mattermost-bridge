@@ -105,9 +105,13 @@ func (c *conv) reply(text string) {
 }
 
 // replyAgent queues a text item of the agent, which may reference files to upload.
-func (c *conv) replyAgent(text string) {
+// The final text of an answer gets the usage footer.
+func (c *conv) replyAgent(text string, final bool) {
 	root := c.replyRoot()
-	footer := c.footer() // as of this item, not of when the post goes out
+	footer := ""
+	if final {
+		footer = c.footer() // as of this item, not of when the post goes out
+	}
 	c.out <- func() { c.deliverAgentText(root, text, footer) }
 }
 

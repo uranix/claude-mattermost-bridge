@@ -278,6 +278,7 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 			Item struct {
 				Type  string          `json:"type"`
 				Text  string          `json:"text"`
+				Final bool            `json:"final"` // ends the answer
 				Name  string          `json:"name"`
 				Input json.RawMessage `json:"input"`
 			} `json:"item"`
@@ -298,7 +299,7 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		it := p.Item.Item
 		switch it.Type {
 		case "text":
-			c.replyAgent(it.Text)
+			c.replyAgent(it.Text, it.Final)
 		case "tool_call":
 			if b.cfg.ShowTools {
 				c.reply("`" + it.Name + "` " + summarizeInput(it.Input))

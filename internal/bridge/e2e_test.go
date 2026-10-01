@@ -231,9 +231,13 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 				send(map[string]any{"jsonrpc": "2.0", "method": "message/consumed", "params": map[string]any{"thread_id": "T1", "message_id": sp.MessageID}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "thread/settings", "params": map[string]any{"thread_id": "T1", "model": "claude-opus-5-5", "effort": "medium", "context_window": 1000000}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "thread/usage", "params": map[string]any{"thread_id": "T1", "model": "claude-opus-5-5", "context_tokens": 45200, "input_tokens": 45200}})
-				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
-					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
+				if strings.HasPrefix(sp.Content, "two") {
+					send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
+						"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": "working on it"}}}})
+				}
 				send(map[string]any{"jsonrpc": "2.0", "method": "thread/usage", "params": map[string]any{"thread_id": "T1", "context_tokens": 45300, "output_tokens": 100}})
+				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
+					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply, "final": true}}}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})
 			case "turn/steer":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
@@ -680,7 +684,8 @@ func TestSteeredMessageGetsWritingHand(t *testing.T) {
 	}
 }
 
-// Each agent message ends with the usage line as of when it was produced.
+// The final message of an answer ends with the usage line, as of when it was
+// produced; intermediate messages have none.
 func TestAgentMessageFooter(t *testing.T) {
 	calls := make(chan string, 64)
 	asrv := newFakeApp(t, calls)
@@ -695,14 +700,17 @@ func TestAgentMessageFooter(t *testing.T) {
 
 	fm.say("D", "dmchan", "p1", "", "hi")
 	p := fm.waitPost(t, "hello from claude")
-	want := "hello from claude\n\n_opus 5.5 | medium | ctx 45.2k/1M | tokens 45.2k in, 0 out_"
+	want := "hello from claude\n\n_opus 5.5 | medium | ctx 45.3k/1M | tokens 45.2k in, 100 out_"
 	if p["message"] != want {
 		t.Fatalf("got %q, want %q", p["message"], want)
 	}
 	time.Sleep(200 * time.Millisecond)
-	fm.say("D", "dmchan", "p2", "", "again")
+	fm.say("D", "dmchan", "p2", "", "two posts")
+	if p := fm.waitPost(t, "working on it"); p["message"] != "working on it" {
+		t.Fatalf("intermediate text got a footer: %q", p["message"])
+	}
 	deadline := time.Now().Add(5 * time.Second)
-	want = "hello from claude\n\n_opus 5.5 | medium | ctx 45.2k/1M | tokens 90.4k in, 100 out_"
+	want = "hello from claude\n\n_opus 5.5 | medium | ctx 45.3k/1M | tokens 90.4k in, 200 out_"
 	for {
 		fm.mu.Lock()
 		found := false

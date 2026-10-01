@@ -27,12 +27,14 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
   commentary and the final answer). Thinking and tool output are not forwarded
   (`BRIDGE_SHOW_TOOLS=1` adds one line per tool call). A typing indicator shows
   while the agent works. Long output is split under Mattermost's post limit.
-- Each agent message ends with an italic usage line, as of when it was written:
+- The final message of each answer (not interim commentary) ends with an
+  italic usage line, as of when it was written:
   `_opus 5.5 | medium | ctx 45.2k/1M | tokens 1.2M in, 38.0k out_`: model,
   effort, context in use / context window, and the tokens this conversation has
   read (cached input included, so it grows fast) and written. Token totals are
   saved with the conversation and reset by `!new`. Needs an app server with
-  `thread/usage` and `thread/settings`; parts it does not report are left out.
+  `thread/usage`, `thread/settings` and the `final` flag on text items; parts
+  it does not report are left out.
 - A message sent while a turn runs goes through `turn/steer`: it joins the
   running turn and the agent reads it at its next step.
 - When the agent actually reads a message, the bot reacts to it: :eyes: for a
