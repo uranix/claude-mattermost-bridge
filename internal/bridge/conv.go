@@ -21,7 +21,8 @@ import (
 
 // reactionDelay is a var so tests can shorten it. The delay lets clients
 // replace their pending copy of a post before the reaction arrives; the
-// desktop client can drop a reaction that comes too early.
+// desktop client can drop a reaction that comes too early. It counts from
+// when the message was sent to the agent, so a slow pickup adds nothing.
 var reactionDelay = 300 * time.Millisecond
 
 // newMessageID returns a random UUIDv4, which the app server passes to the CLI
@@ -154,7 +155,7 @@ func (c *conv) send(ctx context.Context, prompt, postID string) error {
 	if c.awaiting == nil {
 		c.awaiting = map[string]awaited{}
 	}
-	c.awaiting[msgID] = awaited{postID: postID} // before the call, so a fast notification cannot be missed
+	c.awaiting[msgID] = awaited{postID: postID, since: time.Now()} // before the call, so a fast notification cannot be missed
 	c.mu.Unlock()
 	ok := false
 	defer func() {
@@ -313,7 +314,8 @@ func (c *conv) onServerReset() {
 // awaited is a message sent to the agent, waiting to be consumed.
 type awaited struct {
 	postID string
-	steer  bool // sent into a running turn
+	steer  bool      // sent into a running turn
+	since  time.Time // when it was sent
 }
 
 // messageConsumed reacts to the post whose message the agent just picked up:
@@ -332,7 +334,7 @@ func (c *conv) messageConsumed(msgID string) {
 		emoji = "writing_hand"
 	}
 	go func() {
-		time.Sleep(reactionDelay)
+		time.Sleep(reactionDelay - time.Since(a.since)) // no wait once that much has passed
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.b.mm.AddReaction(ctx, c.b.me.ID, a.postID, emoji); err != nil {
