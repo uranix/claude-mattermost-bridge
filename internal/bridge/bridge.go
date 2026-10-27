@@ -263,6 +263,7 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		Trigger    string          `json:"trigger"`
 		PreTokens  int             `json:"pre_tokens"`
 		PostTokens int             `json:"post_tokens"`
+		Origin     string          `json:"origin"` // "agent": the CLI started the turn itself
 		Model      string          `json:"model"`
 		Effort     string          `json:"effort"`
 		Window     int             `json:"context_window"`
@@ -319,6 +320,10 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 		c.setSettings(p.Model, p.Effort, p.Window)
 	case "message/consumed":
 		c.messageConsumed(p.MessageID)
+	case "turn/started":
+		if p.Origin == "agent" {
+			c.agentTurnStarted()
+		}
 	case "turn/completed":
 		c.turnDone()
 		c.sessionRan()

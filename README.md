@@ -37,6 +37,10 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
   it does not report are left out.
 - A message sent while a turn runs goes through `turn/steer`: it joins the
   running turn and the agent reads it at its next step.
+- When the agent starts work on its own (a background task it launched has
+  finished), the app server announces an agent turn; its messages are posted
+  like any other, with the typing indicator, and messages sent meanwhile steer
+  into it.
 - When the agent actually reads a message, the bot reacts to it: :eyes: for a
   message that started a turn, :writing_hand: for one steered into a running
   turn. Commands handled by the bridge itself get no reaction.

@@ -239,6 +239,12 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 				send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
 					"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply, "final": true}}}})
 				send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})
+				if strings.HasPrefix(sp.Content, "bg") { // a background task finishes later
+					send(map[string]any{"jsonrpc": "2.0", "method": "turn/started", "params": map[string]any{"thread_id": "T1", "turn_id": "A1", "origin": "agent"}})
+					send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
+						"thread_id": "T1", "turn_id": "A1", "item": map[string]any{"item": map[string]any{"type": "text", "text": "background done", "final": true}}}})
+					send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "A1", "status": "completed", "origin": "agent"}})
+				}
 			case "turn/steer":
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
 				var sp struct {
@@ -351,6 +357,12 @@ func TestEndToEnd(t *testing.T) {
 }
 
 func startBridge(t *testing.T, cfg *config.Config, msrv *httptest.Server) context.CancelFunc {
+	_, cancel := startBridgeB(t, cfg, msrv)
+	return cancel
+}
+
+// startBridgeB is startBridge that also returns the bridge, for inspecting it.
+func startBridgeB(t *testing.T, cfg *config.Config, msrv *httptest.Server) (*Bridge, context.CancelFunc) {
 	client := mm.New(msrv.URL, "tok")
 	me, err := client.Me(context.Background())
 	if err != nil {
@@ -363,7 +375,7 @@ func startBridge(t *testing.T, cfg *config.Config, msrv *httptest.Server) contex
 	ctx, cancel := context.WithCancel(context.Background())
 	go br.Run(ctx)
 	time.Sleep(300 * time.Millisecond)
-	return cancel
+	return br, cancel
 }
 
 func drain(calls chan string) (out []string) {
@@ -723,6 +735,43 @@ func TestAgentMessageFooter(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("no post %q", want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A turn the agent starts on its own (a finished background task) is posted
+// and counted like any other, and leaves the conversation idle when done.
+func TestAgentTurnIsPosted(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+	}
+	b, stop := startBridgeB(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmchan", "p1", "", "bg job")
+	fm.waitPost(t, "hello from claude")
+	if p := fm.waitPost(t, "background done"); !strings.HasPrefix(p["message"].(string), "background done") {
+		t.Fatalf("got %q", p["message"])
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		b.mu.Lock()
+		c := b.convs["dm:dmchan"]
+		b.mu.Unlock()
+		c.mu.Lock()
+		active := c.active
+		c.mu.Unlock()
+		if active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("conversation still has %d running turns", active)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

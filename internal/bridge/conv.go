@@ -347,6 +347,20 @@ func (c *conv) messageConsumed(msgID string) {
 	}()
 }
 
+// agentTurnStarted counts a turn the agent started on its own (it reports a
+// finished background task, say): typing shows, and messages sent meanwhile
+// steer into it. Its turn/completed ends it like any other.
+func (c *conv) agentTurnStarted() {
+	c.mu.Lock()
+	c.lastActive = time.Now()
+	c.active++
+	start := c.active == 1
+	c.mu.Unlock()
+	if start {
+		c.beginTyping()
+	}
+}
+
 func (c *conv) turnDone() {
 	c.mu.Lock()
 	c.lastActive = time.Now()
