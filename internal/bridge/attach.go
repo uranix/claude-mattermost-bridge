@@ -125,13 +125,14 @@ func (b *Bridge) sendRoots() []string {
 // root. Symlinks are resolved first, so a link inside an allowed directory
 // cannot lead outside it. The agent's output is untrusted (prompt injection
 // could ask it to send ~/.ssh/id_rsa), hence the allowlist.
-func (b *Bridge) resolveSendPath(target string) (string, error) {
+// Relative targets resolve against dir, the conversation's working directory.
+func (b *Bridge) resolveSendPath(dir, target string) (string, error) {
 	p := target
 	if !filepath.IsAbs(p) {
-		if b.cfg.Cwd == "" {
+		if dir == "" {
 			return "", fmt.Errorf("relative path and no CLAUDE_CWD configured")
 		}
-		p = filepath.Join(b.cfg.Cwd, p)
+		p = filepath.Join(dir, p)
 	}
 	real, err := filepath.EvalSymlinks(filepath.Clean(p))
 	if err != nil {
@@ -198,7 +199,7 @@ func (c *conv) deliverAgentText(root, text, footer string) {
 			notes = append(notes, fmt.Sprintf("_Could not attach `%s`: at most %d files per message._", name, maxFilesPerReply))
 			continue
 		}
-		path, err := c.b.resolveSendPath(ref.Target)
+		path, err := c.b.resolveSendPath(c.workDir(), ref.Target)
 		if err == nil && seen[path] {
 			continue // the same file twice
 		}

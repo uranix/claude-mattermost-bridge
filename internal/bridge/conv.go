@@ -66,6 +66,7 @@ type conv struct {
 	trusted      map[string]bool    // tools this conversation runs without asking (trustKey, or trustAll)
 	active       int                // turns sent to the app server and not yet finished
 	rootID       string             // reply target of the latest inbound message
+	cwd          string             // own working directory; "" = the shared CLAUDE_CWD (conversations from before)
 	usage        usageInfo          // shown under each agent message
 	stopTyping   context.CancelFunc
 	typingKick   chan struct{} // asks the typing loop for an event now
@@ -239,14 +240,30 @@ func (c *conv) ensureThread(ctx context.Context) error {
 	if model != "" {
 		params["model"] = model
 	}
+	var prompts []string
 	if c.b.cfg.SendFiles {
-		params["append_system_prompt"] = filePrompt
+		prompts = append(prompts, filePrompt)
+	}
+	c.mu.Lock()
+	own := c.cwd != ""
+	c.mu.Unlock()
+	if own {
+		if err := c.ensureWorkDir(); err != nil {
+			return fmt.Errorf("working directory: %w", err)
+		}
+		prompts = append(prompts, chatDirPrompt)
+	}
+	if len(prompts) > 0 {
+		params["append_system_prompt"] = strings.Join(prompts, "\n")
 	}
 	if c.b.cfg.PermissionPrompts {
 		params["permission_prompts"] = true
 	}
-	if c.b.cfg.Cwd != "" {
-		params["cwd"] = c.b.cfg.Cwd
+	if dir := c.workDir(); dir != "" {
+		params["cwd"] = dir
+	}
+	if c.b.cfg.MemoryDir != "" {
+		params["auto_memory_dir"] = c.b.cfg.MemoryDir
 	}
 	var res struct {
 		ThreadID     string `json:"thread_id"`
@@ -420,7 +437,7 @@ func (c *conv) downloadFiles(ctx context.Context, p mm.Post) string {
 func (c *conv) sessionRan() {
 	c.mu.Lock()
 	c.attached = false
-	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Mode: c.mode, Model: c.model, Trusted: c.trustedLocked(),
+	st := convState{ChannelID: c.channelID, CliSessionID: c.cliSessionID, Cwd: c.cwd, Mode: c.mode, Model: c.model, Trusted: c.trustedLocked(),
 		TokensIn: c.usage.in, TokensOut: c.usage.out}
 	c.mu.Unlock()
 	if st.CliSessionID != "" {
@@ -432,10 +449,10 @@ func (c *conv) sessionRan() {
 // sessionRan, because a session that has not completed a turn cannot be resumed.
 func (c *conv) persistSettings() {
 	c.mu.Lock()
-	mode, model, trusted := c.mode, c.model, c.trustedLocked()
+	mode, model, trusted, cwd := c.mode, c.model, c.trustedLocked(), c.cwd
 	c.mu.Unlock()
 	st, _ := c.b.state.get(c.key)
-	st.ChannelID, st.Mode, st.Model, st.Trusted = c.channelID, mode, model, trusted
+	st.ChannelID, st.Mode, st.Model, st.Trusted, st.Cwd = c.channelID, mode, model, trusted, cwd
 	c.b.state.put(c.key, st)
 }
 

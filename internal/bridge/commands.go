@@ -48,7 +48,7 @@ func (c *conv) command(in inbound) bool {
 		if tid == "" {
 			tid = "(none yet)"
 		}
-		cwd := c.b.cfg.Cwd
+		cwd := c.workDir()
 		if cwd == "" {
 			cwd = "(server default)"
 		}
@@ -60,6 +60,7 @@ func (c *conv) command(in inbound) bool {
 		c.cliSessionID = ""
 		c.attached = false
 		c.usage = usageInfo{}
+		c.cwd = c.b.chatDir(c.key) // a fresh context moves to the conversation's own directory
 		c.mu.Unlock()
 		c.b.state.delete(c.key)
 		if tid != "" {

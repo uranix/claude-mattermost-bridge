@@ -15,6 +15,7 @@ import (
 type convState struct {
 	ChannelID    string   `json:"channel_id"`
 	CliSessionID string   `json:"cli_session_id"`
+	Cwd          string   `json:"cwd,omitempty"` // own working directory; "" = the shared CLAUDE_CWD
 	Mode         string   `json:"mode,omitempty"`
 	Model        string   `json:"model,omitempty"`   // "" = default
 	Trusted      []string `json:"trusted,omitempty"` // tools run without asking

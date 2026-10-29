@@ -776,3 +776,74 @@ func TestAgentTurnIsPosted(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A new conversation works in its own directory; one saved before chat
+// directories existed stays in the shared one until !new. All share memory.
+func TestChatDirectories(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	base := t.TempDir()
+	state := t.TempDir() + "/state.json"
+	// "dmold" was saved by an older bridge: a session, no cwd.
+	os.WriteFile(state, []byte(`{"dm:dmold":{"channel_id":"dmold","cli_session_id":"11111111-2222-4333-8444-555555555555"}}`), 0o600)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(), StateFile: state,
+		Cwd: base, ChatDirs: true, MemoryDir: "/shared/memory",
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	threadParams := func() map[string]any {
+		t.Helper()
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case c := <-calls:
+				m, p, _ := strings.Cut(c, " ")
+				if m == "thread/start" || m == "thread/attach" {
+					var params map[string]any
+					json.Unmarshal([]byte(p), &params)
+					return params
+				}
+			case <-deadline:
+				t.Fatal("no thread/start or thread/attach")
+			}
+		}
+	}
+
+	fm.say("D", "dmnew", "p1", "", "hi")
+	p := threadParams()
+	own := filepath.Join(base, "chats", "dm-dmnew")
+	if p["cwd"] != own || p["auto_memory_dir"] != "/shared/memory" || !strings.Contains(p["append_system_prompt"].(string), "belongs to this conversation alone") {
+		t.Fatalf("new conversation: %v", p)
+	}
+	if fi, err := os.Stat(own); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("own directory not created: %v %v", fi, err)
+	}
+	fm.waitPost(t, "hello from claude")
+	time.Sleep(200 * time.Millisecond)
+	var saved map[string]convState
+	b, _ := os.ReadFile(state)
+	if json.Unmarshal(b, &saved); saved["dm:dmnew"].Cwd != own {
+		t.Fatalf("own directory not saved: %s", b)
+	}
+
+	fm.say("D", "dmold", "p2", "", "hi")
+	p = threadParams()
+	if prompt, _ := p["append_system_prompt"].(string); p["cwd"] != base || p["auto_memory_dir"] != "/shared/memory" || strings.Contains(prompt, "belongs to this conversation alone") {
+		t.Fatalf("old conversation must stay in the shared directory: %v", p)
+	}
+	fm.waitPost(t, "hello from claude")
+	time.Sleep(200 * time.Millisecond)
+
+	fm.say("D", "dmold", "p3", "", "!new")
+	fm.waitPost(t, "fresh context")
+	time.Sleep(200 * time.Millisecond)
+	fm.say("D", "dmold", "p4", "", "again")
+	if p = threadParams(); p["cwd"] != filepath.Join(base, "chats", "dm-dmold") {
+		t.Fatalf("after !new the conversation moves to its own directory: %v", p)
+	}
+}

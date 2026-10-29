@@ -152,7 +152,9 @@ func (b *Bridge) getConv(key, channelID string) *conv {
 			mode = b.cfg.ChannelMode
 		}
 		c = &conv{b: b, key: key, channelID: channelID, mode: mode, model: b.cfg.Model, trusted: map[string]bool{}, inbox: make(chan inbound, 64), out: make(chan func(), 256)}
+		c.cwd = b.chatDir(key)
 		if st, ok := b.state.get(key); ok {
+			c.cwd = st.Cwd // "" for conversations saved before chat directories: they stay in CLAUDE_CWD
 			c.cliSessionID = st.CliSessionID
 			c.usage.in, c.usage.out = st.TokensIn, st.TokensOut
 			c.model = st.Model // "" means the user chose the default

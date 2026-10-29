@@ -47,6 +47,14 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
 - A conversation idle for `BRIDGE_IDLE_CLOSE` (default 1h) has its server thread
   closed to free the slot and process; the next message re-attaches to the same
   session, so nothing is lost.
+- Each conversation works in its own directory, `CLAUDE_CWD/chats/thread-<root
+  post id>` or `chats/dm-<channel id>` (mode 700, created on first use), so chats
+  do not stumble on each other's files; the agent is told the directory is its
+  own and to keep scratch files there rather than in the shared `/tmp`.
+  Conversations saved before this existed stay in `CLAUDE_CWD` until `!new`.
+  Auto-memory stays shared: every thread gets the memory directory of
+  `CLAUDE_CWD` (override with `CLAUDE_MEMORY_DIR`). `BRIDGE_CHAT_DIRS=0` makes
+  all conversations share `CLAUDE_CWD` again.
 - Conversation-to-session mappings are kept in a JSON state file, so contexts
   survive restarts (see Limitations); `!new` forgets the saved session.
 - Attached files are downloaded to `BRIDGE_ATTACHMENT_DIR` (mode 600) and passed

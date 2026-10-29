@@ -120,7 +120,7 @@ func TestResolveSendPath(t *testing.T) {
 
 	check := func(target, wantErr string) {
 		t.Helper()
-		got, err := b.resolveSendPath(target)
+		got, err := b.resolveSendPath(cwd, target)
 		if wantErr == "" {
 			if err != nil {
 				t.Errorf("%s: unexpected error %v", target, err)
@@ -155,7 +155,7 @@ func TestResolveSendPath(t *testing.T) {
 	check(big, "too large")
 	config.MaxFileBytes = old
 
-	if _, err := (&Bridge{cfg: &config.Config{}}).resolveSendPath("relative.txt"); err == nil {
+	if _, err := (&Bridge{cfg: &config.Config{}}).resolveSendPath("", "relative.txt"); err == nil {
 		t.Error("a relative path without a cwd must be refused")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,8 @@ type Config struct {
 
 	AppServerURL   string // ws://127.0.0.1:3284?key=...
 	Cwd            string
+	ChatDirs       bool   // each new conversation works in its own directory under Cwd/chats
+	MemoryDir      string // auto-memory shared by all conversations; "" = the CLI's per-directory default
 	PermissionMode string
 	Model          string
 
@@ -43,6 +46,8 @@ func Load() (*Config, error) {
 		MattermostURL:     strings.TrimRight(os.Getenv("MM_URL"), "/"),
 		AppServerURL:      getenv("APP_SERVER_URL", "ws://127.0.0.1:3284"),
 		Cwd:               os.Getenv("CLAUDE_CWD"),
+		ChatDirs:          getenv("BRIDGE_CHAT_DIRS", "1") != "0",
+		MemoryDir:         os.Getenv("CLAUDE_MEMORY_DIR"),
 		PermissionMode:    getenv("CLAUDE_PERMISSION_MODE", "acceptEdits"),
 		Model:             os.Getenv("CLAUDE_MODEL"),
 		AttachDir:         getenv("BRIDGE_ATTACHMENT_DIR", "attachments"),
@@ -54,6 +59,9 @@ func Load() (*Config, error) {
 		PermissionPrompts: getenv("BRIDGE_PERMISSION_PROMPTS", "1") != "0",
 		Debug:             truthy(os.Getenv("BRIDGE_DEBUG")),
 		AllowedUsers:      map[string]bool{},
+	}
+	if c.MemoryDir == "" && c.Cwd != "" {
+		c.MemoryDir = defaultMemoryDir(c.Cwd)
 	}
 	if f := os.Getenv("APP_SERVER_KEY_FILE"); f != "" {
 		u, err := withKeyFile(c.AppServerURL, f)
@@ -150,4 +158,33 @@ func truthy(s string) bool {
 		return true
 	}
 	return false
+}
+
+// defaultMemoryDir is the auto-memory directory the CLI uses for sessions in
+// cwd: <config dir>/projects/<real path, every other character than a letter
+// or digit replaced by '-'>/memory. Passing it explicitly keeps that memory
+// shared once conversations work in their own subdirectories.
+func defaultMemoryDir(cwd string) string {
+	real, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		real = cwd
+	}
+	if abs, err := filepath.Abs(real); err == nil {
+		real = abs
+	}
+	base := os.Getenv("CLAUDE_CONFIG_DIR")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".claude")
+	}
+	name := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '-'
+	}, real)
+	return filepath.Join(base, "projects", name, "memory")
 }
