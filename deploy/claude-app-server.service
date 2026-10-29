@@ -9,6 +9,9 @@ ExecStart=%h/.local/bin/claude-app-server start --host 127.0.0.1 --port 3284 --k
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=3
+# Stop only the server itself: each claude child exits once its stdin closes,
+# while background jobs the agent started (trainings, waiters) keep running.
+KillMode=process
 
 [Install]
 WantedBy=default.target
