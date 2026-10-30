@@ -137,6 +137,14 @@ func (c *conv) cancel() {
 		c.reply("Nothing is running.")
 		return
 	}
+	if msg := c.interruptAll(tid, n); msg != "" {
+		c.reply(msg)
+	}
+}
+
+// interruptAll interrupts until no turn runs; n is the number running. It
+// returns a notice for the user when that did not work out.
+func (c *conv) interruptAll(tid string, n int) string {
 	// One interrupt ends the running turn; queued messages then start their own
 	// turns, so keep interrupting until the server reports none left.
 	for i := 0; i < n; i++ {
@@ -144,17 +152,18 @@ func (c *conv) cancel() {
 		before := c.active
 		c.mu.Unlock()
 		if before == 0 {
-			return
+			return ""
 		}
 		if err := c.interrupt(tid); err != nil {
 			if appclient.IsCode(err, appclient.ErrNoActiveTurn) {
 				// The server has no turn, so our count is stale: correct it.
 				c.forgetTurns()
-				c.reply("Nothing was running on the server; cleared the stale state.")
-			} else {
-				c.reply("**Error:** " + err.Error())
+				if i > 0 {
+					return "" // the earlier interrupts stopped everything
+				}
+				return "Nothing was running on the server; cleared the stale state."
 			}
-			return
+			return "**Error:** " + err.Error()
 		}
 		// Wait for the server to report a turn ended.
 		wait := c.b.cfg.CancelWait
@@ -174,8 +183,9 @@ func (c *conv) cancel() {
 	left := c.active
 	c.mu.Unlock()
 	if left > 0 {
-		c.reply("The interrupt was accepted but the agent did not end its turn. `!reset` reconnects the agent and keeps this conversation's context.")
+		return "The interrupt was accepted but the agent did not end its turn. `!reset` reconnects the agent and keeps this conversation's context."
 	}
+	return ""
 }
 
 // forgetTurns drops the running-turn count and the typing indicator.

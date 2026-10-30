@@ -164,7 +164,7 @@ func (c *conv) send(ctx context.Context, prompt, postID string) error {
 	if c.awaiting == nil {
 		c.awaiting = map[string]awaited{}
 	}
-	c.awaiting[msgID] = awaited{postID: postID, since: time.Now()} // before the call, so a fast notification cannot be missed
+	c.awaiting[msgID] = awaited{postID: postID, prompt: prompt, since: time.Now()} // before the call, so a fast notification cannot be missed
 	c.mu.Unlock()
 	ok := false
 	defer func() {
@@ -342,6 +342,7 @@ func (c *conv) onServerReset() {
 // awaited is a message sent to the agent, waiting to be consumed.
 type awaited struct {
 	postID string
+	prompt string    // what was sent, to send again if the agent is stopped before reading it
 	steer  bool      // sent into a running turn
 	since  time.Time // when it was sent
 }

@@ -25,14 +25,15 @@ import (
 type fakeMM struct {
 	mu        sync.Mutex
 	posts     []map[string]any
-	uploads   []string          // "channel:filename:content"
-	reactions []string          // "postID:emoji" added by the bot
-	patches   map[string]string // postID -> latest message
+	uploads   []string           // "channel:filename:content"
+	reactions []string           // "postID:emoji" added by the bot
+	patches   map[string]string  // postID -> latest message
+	said      map[string]mm.Post // posts made with say, for GET /posts/{id}
 	ws        chan []byte
 }
 
 func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
-	f := &fakeMM{ws: make(chan []byte, 8), patches: map[string]string{}}
+	f := &fakeMM{ws: make(chan []byte, 8), patches: map[string]string{}, said: map[string]mm.Post{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/users/me", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(mm.User{ID: "bot1", Username: "claude"})
@@ -45,6 +46,16 @@ func newFakeMM(t *testing.T) (*fakeMM, *httptest.Server) {
 	})
 	mux.HandleFunc("/api/v4/users/mallory", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(mm.User{ID: "mallory", Username: "mallory"})
+	})
+	mux.HandleFunc("GET /api/v4/posts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		p, ok := f.said[r.PathValue("id")]
+		f.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(p)
 	})
 	mux.HandleFunc("POST /api/v4/reactions", func(w http.ResponseWriter, r *http.Request) {
 		var b map[string]string
@@ -121,7 +132,11 @@ func (f *fakeMM) say(channelType, channelID, id, rootID, text string) {
 }
 
 func (f *fakeMM) sayAs(userID, channelType, channelID, id, rootID, text string) {
-	post, _ := json.Marshal(mm.Post{ID: id, ChannelID: channelID, UserID: userID, RootID: rootID, Message: text})
+	p := mm.Post{ID: id, ChannelID: channelID, UserID: userID, RootID: rootID, Message: text}
+	f.mu.Lock()
+	f.said[id] = p
+	f.mu.Unlock()
+	post, _ := json.Marshal(p)
 	ev, _ := json.Marshal(map[string]any{"event": "posted", "data": map[string]any{"post": string(post), "channel_type": channelType, "channel_name": "name-" + channelID}})
 	f.ws <- ev
 }
@@ -181,7 +196,8 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 			return
 		}
 		defer c.CloseNow()
-		held := "" // message_id of a turn started with "hold", finished by the next steer
+		held := ""  // message_id of a turn started with "hold", finished by the next steer
+		unread := 0 // steered messages left unread, dropped by an interrupt
 		send := func(v any) {
 			b, _ := json.Marshal(v)
 			c.Write(r.Context(), websocket.MessageText, b)
@@ -249,14 +265,28 @@ func newFakeAppText(t *testing.T, calls chan string, reply string) *httptest.Ser
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
 				var sp struct {
 					MessageID string `json:"message_id"`
+					Content   string `json:"content"`
 				}
 				json.Unmarshal(req.Params, &sp)
+				if strings.Contains(sp.Content, "unread") {
+					unread++ // queued behind the running step; not read yet
+					continue
+				}
 				send(map[string]any{"jsonrpc": "2.0", "method": "message/consumed", "params": map[string]any{"thread_id": "T1", "message_id": sp.MessageID}})
 				if held != "" {
 					held = ""
 					send(map[string]any{"jsonrpc": "2.0", "method": "item/created", "params": map[string]any{
 						"thread_id": "T1", "turn_id": "U1", "item": map[string]any{"item": map[string]any{"type": "text", "text": reply}}}})
 					send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "completed"}})
+				}
+			case "turn/interrupt":
+				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})
+				if held != "" { // the held turn ends; unread steered messages are dropped
+					held = ""
+					send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U1", "status": "interrupted"}})
+					for ; unread > 0; unread-- {
+						send(map[string]any{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"thread_id": "T1", "turn_id": "U2", "status": "interrupted"}})
+					}
 				}
 			default:
 				send(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{}})

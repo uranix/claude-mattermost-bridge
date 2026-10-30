@@ -352,6 +352,9 @@ func (b *Bridge) onReaction(ctx context.Context, r mm.Reaction) {
 	p := b.byPost[r.PostID]
 	b.mu.Unlock()
 	if p == nil {
+		if r.Emoji == haltEmoji {
+			b.onHaltReaction(ctx, r)
+		}
 		return
 	}
 	u, ok := b.user(ctx, r.UserID)

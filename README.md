@@ -44,6 +44,12 @@ Go, one dependency (`github.com/coder/websocket`), single static binary.
 - When the agent actually reads a message, the bot reacts to it: :eyes: for a
   message that started a turn, :writing_hand: for one steered into a running
   turn. Commands handled by the bridge itself get no reaction.
+- **Stop and review:** react with :no_entry_sign: to any post of a conversation
+  (yours or the bot's) when steering is not enough. The running turn is
+  interrupted, as with `!cancel`, and a new turn tells the agent it was stopped
+  and must review the latest messages before going on; messages it had not
+  read yet (the interrupt drops them) are included verbatim. Anyone who may use
+  the bot in that conversation can do it.
 - A conversation idle for `BRIDGE_IDLE_CLOSE` (default 1h) has its server thread
   closed to free the slot and process; the next message re-attaches to the same
   session, so nothing is lost.
@@ -181,7 +187,7 @@ Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
 | `!help` | list commands |
 | `!status` | thread id, permission mode, running turns, working directory, chat ID for events |
 | `!new` | fresh context (also `!clear`); closes the old thread on the server |
-| `!cancel` | interrupt running work and queued messages |
+| `!cancel` | interrupt running work and queued messages (:no_entry_sign: on a post interrupts and makes the agent review the latest messages instead) |
 | `!reset` | reconnect the agent when a turn is stuck; keeps the conversation and its context (unlike `!new`) |
 | `!context` | show what fills the context window (runs the CLI's `/context`) |
 | `!compact [instructions]` | compact the context now (runs `/compact`); automatic compactions are reported too |

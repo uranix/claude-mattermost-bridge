@@ -112,6 +112,12 @@ func (c *Client) Me(ctx context.Context) (User, error) {
 	return u, err
 }
 
+func (c *Client) GetPost(ctx context.Context, id string) (Post, error) {
+	var p Post
+	err := c.do(ctx, "GET", "/posts/"+url.PathEscape(id), nil, &p)
+	return p, err
+}
+
 func (c *Client) User(ctx context.Context, id string) (User, error) {
 	var u User
 	err := c.do(ctx, "GET", "/users/"+url.PathEscape(id), nil, &u)
