@@ -52,7 +52,7 @@ func (c *conv) command(in inbound) bool {
 		if cwd == "" {
 			cwd = "(server default)"
 		}
-		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nModel: `%s`\nRunning turns: %d\nWaiting for approval: %d\nTrusted tools: %s\nWorking directory: `%s`", tid, mode, model, active, waiting, trustSummary(c.trustList()), cwd))
+		c.reply(fmt.Sprintf("Thread: `%s`\nMode: `%s`\nModel: `%s`\nRunning turns: %d\nWaiting for approval: %d\nTrusted tools: %s\nWorking directory: `%s`\nChat ID (for events): `%s`", tid, mode, model, active, waiting, trustSummary(c.trustList()), cwd, chatID(c.key)))
 	case "new", "clear":
 		c.mu.Lock()
 		tid := c.threadID

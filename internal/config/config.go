@@ -39,6 +39,7 @@ type Config struct {
 	SendRoots         []string      // extra directories (besides cwd, attachments, /tmp) files may be sent from
 	ShowTools         bool
 	Debug             bool
+	EventSocket       string // Unix socket local programs send events to; "" disables
 }
 
 func Load() (*Config, error) {
@@ -58,6 +59,7 @@ func Load() (*Config, error) {
 		SendFiles:         getenv("BRIDGE_SEND_FILES", "1") != "0",
 		PermissionPrompts: getenv("BRIDGE_PERMISSION_PROMPTS", "1") != "0",
 		Debug:             truthy(os.Getenv("BRIDGE_DEBUG")),
+		EventSocket:       EventSocketPath(),
 		AllowedUsers:      map[string]bool{},
 	}
 	if c.MemoryDir == "" && c.Cwd != "" {
@@ -187,4 +189,22 @@ func defaultMemoryDir(cwd string) string {
 		return '-'
 	}, real)
 	return filepath.Join(base, "projects", name, "memory")
+}
+
+// EventSocketPath is where the bridge takes external events: BRIDGE_EVENT_SOCKET,
+// or a fixed default, so that the event command finds it without the bridge's
+// configuration. "" when BRIDGE_EVENT_SOCKET=off.
+func EventSocketPath() string {
+	switch p := os.Getenv("BRIDGE_EVENT_SOCKET"); p {
+	case "off", "0":
+		return ""
+	case "":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(home, ".local", "state", "claude-mattermost", "events.sock")
+	default:
+		return p
+	}
 }

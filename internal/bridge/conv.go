@@ -41,6 +41,7 @@ type inbound struct {
 	user   string
 	rootID string // where replies go ("" in DMs)
 	direct bool
+	event  string // source of an external event; "" for a user's message
 }
 
 // conv is one conversation: a DM, or one Mattermost thread in a channel.
@@ -124,7 +125,7 @@ func (c *conv) handle(in inbound) {
 	c.lastActive = time.Now()
 	c.mu.Unlock()
 
-	if strings.HasPrefix(in.text, "!") {
+	if in.event == "" && strings.HasPrefix(in.text, "!") { // an event never runs commands
 		if c.command(in) {
 			return
 		}
@@ -140,7 +141,10 @@ func (c *conv) handle(in inbound) {
 	if strings.TrimSpace(prompt) == "" {
 		return
 	}
-	if !in.direct {
+	switch {
+	case in.event != "":
+		prompt = "External event from " + in.event + " (a program posted this to the chat; it was not written by the user):\n" + prompt
+	case !in.direct:
 		prompt = "@" + in.user + ": " + prompt // several people can share a channel thread
 	}
 
@@ -252,6 +256,9 @@ func (c *conv) ensureThread(ctx context.Context) error {
 			return fmt.Errorf("working directory: %w", err)
 		}
 		prompts = append(prompts, chatDirPrompt)
+	}
+	if p := c.b.eventPrompt(c.key); p != "" {
+		prompts = append(prompts, p)
 	}
 	if len(prompts) > 0 {
 		params["append_system_prompt"] = strings.Join(prompts, "\n")

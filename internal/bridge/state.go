@@ -66,6 +66,17 @@ func (s *store) put(key string, v convState) {
 	s.saveLocked()
 }
 
+// keys lists the saved conversation keys.
+func (s *store) keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.data))
+	for k := range s.data {
+		out = append(out, k)
+	}
+	return out
+}
+
 func (s *store) delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

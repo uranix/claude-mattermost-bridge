@@ -27,6 +27,7 @@ type Bridge struct {
 	mu       sync.Mutex
 	convs    map[string]*conv   // by conversation key
 	byThread map[string]*conv   // by app-server thread id
+	events   eventGate          // external events: de-duplication and rate limits
 	byPost   map[string]*prompt // permission prompts waiting for an answer, by post id
 
 	state *store
@@ -53,6 +54,9 @@ func (b *Bridge) Run(ctx context.Context) {
 	go b.app.Run(ctx)
 	go b.dispatchNotifications(ctx)
 	go b.janitor(ctx)
+	if b.cfg.EventSocket != "" {
+		go b.serveEvents(ctx)
+	}
 	b.mm.Listen(ctx, func(ev mm.Posted) { b.onPosted(ctx, ev) }, func(r mm.Reaction) { go b.onReaction(ctx, r) })
 }
 

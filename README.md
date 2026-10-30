@@ -145,6 +145,33 @@ attached to that message. Details:
 - The app server and the bridge must share the filesystem (same paths).
 - `BRIDGE_SEND_FILES=0` turns the feature off (no instructions, no uploads).
 
+## External events
+
+Local programs can drive the bot: an event is posted in its chat and reaches the
+agent like a user message (it starts a turn, or is steered into the running one).
+
+```sh
+claude-mattermost-bridge event --to <chat ID> --source build-monitor --id build-42 --text 'Build 42 passed'
+echo 'long text' | claude-mattermost-bridge event --to <chat ID> --source ci
+```
+
+- The chat ID is the thread's root post ID, or the DM channel ID; `!status`
+  shows it. Run from inside a conversation's directory (`CLAUDE_CWD/chats/...`),
+  `--to` can be left out.
+- In the chat the event shows as "_Event from `build-monitor`:_ ...", and gets
+  :eyes: when the agent reads it. The agent sees it labelled as an external
+  event, not as the user's words, and event text never runs `!` commands.
+- `--id` makes retries safe: the same source and ID are delivered once (for 24 h).
+  At most 20 events per minute per chat; text up to 12000 characters.
+- Exit codes: 0 delivered (or duplicate), 1 bridge not reachable (retry), 2 bad
+  arguments or unknown chat, 3 rate limited (retry later).
+- Transport: HTTP on a Unix socket, mode 600, at `BRIDGE_EVENT_SOCKET` (default
+  `~/.local/state/claude-mattermost/events.sock`; `off` disables it). Only
+  processes of the bridge's user can send. Events need the conversation to exist.
+- The agent is told about the command and its chat ID, and to wait for slow
+  things (a job, a file) with a detached watcher that sends an event, rather
+  than a background task of its own session, which dies on restarts.
+
 ## Commands
 
 Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
@@ -152,7 +179,7 @@ Mattermost swallows `/...` as its own slash commands, so the bridge uses `!`.
 | Command | Effect |
 |---|---|
 | `!help` | list commands |
-| `!status` | thread id, permission mode, running turns |
+| `!status` | thread id, permission mode, running turns, working directory, chat ID for events |
 | `!new` | fresh context (also `!clear`); closes the old thread on the server |
 | `!cancel` | interrupt running work and queued messages |
 | `!reset` | reconnect the agent when a turn is stuck; keeps the conversation and its context (unlike `!new`) |
