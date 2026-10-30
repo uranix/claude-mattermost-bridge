@@ -74,11 +74,51 @@ func TestHaltReaction(t *testing.T) {
 	}
 	fm.waitPost(t, "hello from claude")
 	time.Sleep(200 * time.Millisecond)
+	fm.mu.Lock()
+	for _, p := range fm.posts {
+		if strings.Contains(p["message"].(string), "Interrupted") {
+			t.Errorf("a stop must not also post %q", p["message"])
+		}
+	}
+	fm.mu.Unlock()
 
 	// Nothing running: nothing to stop.
 	fm.react("alice", "p1", haltEmoji)
 	fm.waitPost(t, "Nothing is running to stop")
 	if extra := turns(0); len(drain(calls)) > 0 || len(extra) > 0 {
 		t.Fatal("no turn calls expected when nothing runs")
+	}
+}
+
+// !cancel ending two turns reports it once.
+func TestCancelReportsOnce(t *testing.T) {
+	calls := make(chan string, 64)
+	asrv := newFakeApp(t, calls)
+	fm, msrv := newFakeMM(t)
+	cfg := &config.Config{
+		MattermostURL: msrv.URL, Token: "tok", AllowedUsers: map[string]bool{"alice": true},
+		AppServerURL:   "ws" + strings.TrimPrefix(asrv.URL, "http"),
+		PermissionMode: "acceptEdits", AttachDir: t.TempDir(),
+	}
+	stop := startBridge(t, cfg, msrv)
+	defer stop()
+
+	fm.say("D", "dmc", "p1", "", "hold on")
+	time.Sleep(300 * time.Millisecond)
+	fm.say("D", "dmc", "p2", "", "unread follow-up")
+	time.Sleep(300 * time.Millisecond)
+	fm.say("D", "dmc", "p3", "", "!cancel")
+	fm.waitPost(t, "Interrupted")
+	time.Sleep(500 * time.Millisecond)
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	n := 0
+	for _, p := range fm.posts {
+		if strings.Contains(p["message"].(string), "Interrupted") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d Interrupted posts, want 1: %v", n, fm.posts)
 	}
 }

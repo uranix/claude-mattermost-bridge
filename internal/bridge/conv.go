@@ -69,6 +69,7 @@ type conv struct {
 	rootID       string             // reply target of the latest inbound message
 	cwd          string             // own working directory; "" = the shared CLAUDE_CWD (conversations from before)
 	usage        usageInfo          // shown under each agent message
+	interrupting bool               // a stop or !cancel is interrupting: it reports that itself
 	stopTyping   context.CancelFunc
 	typingKick   chan struct{} // asks the typing loop for an event now
 }

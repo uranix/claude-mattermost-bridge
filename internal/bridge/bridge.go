@@ -331,9 +331,10 @@ func (b *Bridge) handleNotification(n appclient.Notification) {
 			c.agentTurnStarted()
 		}
 	case "turn/completed":
+		quiet := c.isInterrupting() // read before turnDone, which ends the wait in interruptAll
 		c.turnDone()
 		c.sessionRan()
-		if p.Status == "interrupted" {
+		if p.Status == "interrupted" && !quiet {
 			c.reply("_Interrupted._")
 		}
 	case "turn/error":

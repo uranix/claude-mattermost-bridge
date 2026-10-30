@@ -139,12 +139,28 @@ func (c *conv) cancel() {
 	}
 	if msg := c.interruptAll(tid, n); msg != "" {
 		c.reply(msg)
+		return
 	}
+	c.reply("_Interrupted._")
+}
+
+func (c *conv) isInterrupting() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.interrupting
 }
 
 // interruptAll interrupts until no turn runs; n is the number running. It
 // returns a notice for the user when that did not work out.
 func (c *conv) interruptAll(tid string, n int) string {
+	c.mu.Lock()
+	c.interrupting = true // the turns it ends are not announced one by one
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.interrupting = false
+		c.mu.Unlock()
+	}()
 	// One interrupt ends the running turn; queued messages then start their own
 	// turns, so keep interrupting until the server reports none left.
 	for i := 0; i < n; i++ {
